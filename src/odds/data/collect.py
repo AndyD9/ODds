@@ -227,6 +227,162 @@ def credits_utilises_aujourdhui(con: sqlite3.Connection) -> int:
     return int(r[0] or 0)
 
 
+# ---------------------------------------------------------------------------
+# Ordonnancement des passes payantes
+# ---------------------------------------------------------------------------
+# Le budget quotidien est un PLAFOND, pas un calendrier. On retenait
+# `candidats[: dispo // cout_unitaire]` : les premiers championnats du plan
+# jusqu'à épuisement, sans regarder l'heure des coups d'envoi. En pratique,
+# tout partait au petit matin. Relevé du 2026-09-18 : douze passes, quatorze
+# credits, budget vidé avant midi, et plus rien pour relever les cotes avant
+# les matchs du soir.
+#
+# Or c'est ce dernier relevé qui porte l'information. Le CLV -- le seul
+# critère lisible sur quelques dizaines de paris (prereg 0001 §5) -- se
+# mesure contre la dernière cote observée avant le coup d'envoi
+# (`paper._cloture_observee`). Une passe à T−1 h vaut toutes les passes de
+# la matinée.
+#
+# Deux mecanismes :
+#
+# - des FENÊTRES, qui donnent la priorité au proche et imposent une cadence
+#   minimale au lointain : inutile de repayer un championnat qui joue dans
+#   30 h et qu'on a relevé il y a deux heures ;
+# - une RÉSERVE, qui met de côté de quoi payer la passe de clôture des
+#   championnats jouant plus tard dans la journée. C'est elle qui corrige le
+#   défaut constaté.
+
+# nom, heures max avant le coup d'envoi, cadence minimale entre deux passes
+FENETRES = (
+    ("clôture", 2.0, 0.0),
+    ("pré-match", 8.0, 3.0),
+    ("veille", 36.0, 12.0),
+)
+
+COLONNES_PLAN = ["sport", "heures", "fenetre", "age_h", "retenu", "motif"]
+
+
+def _classer(heures: float) -> tuple[str | None, float]:
+    """Fenêtre et cadence correspondant à un délai avant coup d'envoi."""
+    for nom, h_max, cadence in FENETRES:
+        if heures <= h_max:
+            return nom, cadence
+    return None, 0.0
+
+
+def _horodatage_utc(valeur) -> pd.Timestamp | None:
+    if valeur is None or (not isinstance(valeur, str) and pd.isna(valeur)):
+        return None
+    t = pd.Timestamp(valeur)
+    return t.tz_localize("UTC") if t.tzinfo is None else t
+
+
+def planifier(plan: pd.DataFrame, dispo: int, cout_unitaire: int,
+              dernieres_passes: dict[str, str] | None = None,
+              maintenant=None) -> pd.DataFrame:
+    """Quels championnats interroger maintenant, et pourquoi.
+
+    Fonction pure — aucun accès disque ni réseau — pour être testable sans
+    toucher au budget réel.
+
+    ``plan`` vient de ``oddsapi.championnats_avec_matchs`` (gratuit) :
+    colonnes ``sport``, ``n_proches``, ``prochain``. ``dernieres_passes``
+    donne, par championnat, l'horodatage de notre dernier relevé.
+
+    Renvoie une ligne par championnat, avec sa fenêtre, la décision et son
+    MOTIF. Le motif est conservé même en cas de refus : un ordonnanceur qui
+    n'explique pas ce qu'il écarte est indébogable, et celui-ci arbitre des
+    crédits qu'on ne peut pas racheter.
+    """
+    maintenant = _horodatage_utc(maintenant) or pd.Timestamp.now(tz="UTC")
+    vus = dernieres_passes or {}
+
+    if plan is None or len(plan) == 0:
+        return pd.DataFrame(columns=COLONNES_PLAN)
+
+    # Le budget se remet à zéro à minuit UTC (`credits_utilises_aujourdhui`).
+    # La réserve ne protège donc que les coups d'envoi de la journée en
+    # cours : ceux de demain seront payés sur le budget de demain.
+    fin_de_journee = maintenant.normalize() + pd.Timedelta(days=1)
+
+    lignes = []
+    for r in plan.itertuples():
+        prochain = _horodatage_utc(getattr(r, "prochain", None))
+        heures = ((prochain - maintenant).total_seconds() / 3600.0
+                  if prochain is not None else float("nan"))
+        vu = _horodatage_utc(vus.get(r.sport))
+        age = ((maintenant - vu).total_seconds() / 3600.0
+               if vu is not None else float("inf"))
+
+        n_proches = int(getattr(r, "n_proches", 0) or 0)
+        fenetre, cadence = ((None, 0.0) if pd.isna(heures)
+                            else _classer(heures))
+
+        if pd.notna(heures) and heures < 0:
+            motif = "coup d'envoi déjà passé"
+            fenetre = None
+        elif n_proches <= 0 or fenetre is None:
+            motif = f"aucun match sous {FENETRES[-1][1]:.0f} h"
+        elif age < cadence:
+            motif = f"relevé il y a {age:.1f} h (cadence {cadence:.0f} h)"
+        else:
+            motif = None            # candidat réel, arbitré par le budget
+
+        # `candidat` porte la décision, PAS `motif is None` : dès qu'une
+        # seule ligne reçoit un motif, pandas type la colonne en chaîne et
+        # convertit les None en NaN — et `NaN is not None` est vrai. Ce
+        # détail écartait silencieusement tous les championnats éligibles.
+        lignes.append({"sport": r.sport, "heures": heures, "fenetre": fenetre,
+                       "age_h": age, "retenu": False, "motif": motif,
+                       "candidat": motif is None, "_prochain": prochain})
+
+    d = pd.DataFrame(lignes)
+    rang = {nom: i for i, (nom, _, _) in enumerate(FENETRES)}
+    d["_p"] = d.fenetre.map(rang).fillna(len(FENETRES))
+    d = d.sort_values(["_p", "heures"]).reset_index(drop=True)
+
+    # --- réserve ----------------------------------------------------------
+    # Tout championnat qui joue plus tard AUJOURD'HUI aura besoin d'une passe
+    # de clôture. On met son coût de côté avant de servir les fenêtres
+    # lointaines, y compris pour ceux qu'une cadence bloque à cet instant :
+    # ils redeviendront éligibles avant leur coup d'envoi.
+    h_cloture, nom_cloture = FENETRES[0][1], FENETRES[0][0]
+    a_venir = d[(d.heures > h_cloture) & d._prochain.notna()
+                & (d._prochain <= fin_de_journee)]
+    reserve = len(a_venir) * cout_unitaire
+
+    libre = float(dispo)
+    hors_cloture = max(0.0, dispo - reserve)
+    for i, r in d.iterrows():
+        if not r["candidat"]:
+            continue
+        if libre < cout_unitaire:
+            d.loc[i, "motif"] = "budget du jour épuisé"
+            continue
+        if r.fenetre != nom_cloture and hors_cloture < cout_unitaire:
+            d.loc[i, "motif"] = (f"{int(reserve)} crédit(s) réservé(s) aux "
+                                 "passes de clôture du jour")
+            continue
+        d.loc[i, "retenu"] = True
+        d.loc[i, "motif"] = (f"fenêtre {r.fenetre}, coup d'envoi dans "
+                             f"{r.heures:.1f} h")
+        libre -= cout_unitaire
+        hors_cloture = max(0.0, hors_cloture - cout_unitaire)
+
+    return d[COLONNES_PLAN]
+
+
+def _dernieres_passes(con: sqlite3.Connection) -> dict[str, str]:
+    """Dernier relevé The Odds API par championnat.
+
+    Pour les lignes odds-api, ``league`` porte la clé de championnat de
+    l'API : c'est la même valeur que ``sport`` dans le plan.
+    """
+    q = ("SELECT league, MAX(observed_at) FROM odds_snapshot "
+         "WHERE source = 'odds-api' AND league IS NOT NULL GROUP BY league")
+    return {r[0]: r[1] for r in con.execute(q)}
+
+
 def _collecter_oddsapi(con, observed_at, run_id, connu, verbose):
     """Passe The Odds API, sous contrainte de budget.
 
@@ -250,11 +406,15 @@ def _collecter_oddsapi(con, observed_at, run_id, connu, verbose):
         return 0, 0, 0, None, []
 
     plan = oddsapi.championnats_avec_matchs(sports, heures=36)   # gratuit
-    candidats = plan[plan.n_proches > 0].sport.tolist()
-    retenus = candidats[: dispo // cout_unitaire]
+    ordre = planifier(plan, dispo, cout_unitaire, _dernieres_passes(con))
+    retenus = ordre[ordre.retenu].sport.tolist()
     if verbose:
-        print(f"  oddsapi  {len(candidats)}/{len(sports)} championnats jouent sous 36 h ; "
-              f"budget {deja}/{budget} -> {len(retenus)} interrogé(s)")
+        print(f"  oddsapi  budget {deja}/{budget} crédits · {cout_unitaire} par "
+              f"championnat ({markets} × {regions}) · {len(retenus)} interrogé(s)")
+        for r in ordre.itertuples():
+            delai = "     —" if pd.isna(r.heures) else f"{r.heures:6.1f} h"
+            print(f"           {'→' if r.retenu else ' '} {r.sport:30s} "
+                  f"{delai}  {r.motif}")
     if not retenus:
         return 0, 0, 0, None, []
 

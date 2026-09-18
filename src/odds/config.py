@@ -28,7 +28,7 @@ REGLAGES = {
                         "soccer_epl,soccer_france_ligue_one,soccer_spain_la_liga,"
                         "soccer_italy_serie_a,soccer_germany_bundesliga"),
     "ODDS_API_REGIONS": ("Région des bookmakers", False, "eu"),
-    "ODDS_API_MARKETS": ("Marchés", False, "h2h"),
+    "ODDS_API_MARKETS": ("Marchés", False, "h2h,totals"),
     "ODDS_API_BUDGET_JOUR": ("Budget de crédits par jour", False, "14"),
 }
 

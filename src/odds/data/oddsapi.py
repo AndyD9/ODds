@@ -87,7 +87,8 @@ def championnats_avec_matchs(sports: list[str], heures: int = 36) -> pd.DataFram
     C'est l'étape qui rend l'offre gratuite viable : elle évite de dépenser
     un crédit sur un championnat qui ne joue pas.
     """
-    limite = datetime.now(timezone.utc) + timedelta(hours=heures)
+    maintenant = datetime.now(timezone.utc)
+    limite = maintenant + timedelta(hours=heures)
     lignes = []
     for s in sports:
         try:
@@ -96,12 +97,17 @@ def championnats_avec_matchs(sports: list[str], heures: int = 36) -> pd.DataFram
             lignes.append({"sport": s, "n_total": 0, "n_proches": 0,
                            "prochain": pd.NaT, "erreur": str(e)[:120]})
             continue
-        proches = ev[ev.commence_time <= limite] if len(ev) else ev
+        # /events renvoie aussi les matchs EN COURS. Un match commencé ne
+        # porte plus d'information payante : la cote d'avant-match est
+        # partie, et l'ordonnanceur qui lit ``prochain`` croirait à un coup
+        # d'envoi imminent alors qu'il est déjà passé.
+        a_venir = ev[ev.commence_time > maintenant] if len(ev) else ev
+        proches = a_venir[a_venir.commence_time <= limite] if len(a_venir) else a_venir
         lignes.append({
             "sport": s,
             "n_total": len(ev),
             "n_proches": len(proches),
-            "prochain": ev.commence_time.min() if len(ev) else pd.NaT,
+            "prochain": a_venir.commence_time.min() if len(a_venir) else pd.NaT,
             "erreur": None,
         })
     d = pd.DataFrame(lignes)
