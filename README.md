@@ -106,24 +106,39 @@ prend la publication suivante automatiquement.
 Pour une couverture quotidienne réelle, il faut une API de cotes dédiée — c'est l'option B de
 [`PLAN.md`](PLAN.md) §7.2, explicitement différée après le rejet de H1.
 
-#### « Quelle issue choisir ? » — deux lectures, jamais une seule
+#### « Quelle issue choisir ? » — le verdict
 
-L'outil affiche **deux** colonnes qui répondent à des questions différentes et se contredisent
-régulièrement :
+L'outil rend un **verdict unique par match**, pas deux chiffres à arbitrer soi-même. Il ne prédit
+rien : il répond à une seule question — le meilleur prix disponible s'écarte-t-il assez du
+consensus des **autres** bookmakers pour ne pas être du bruit ?
 
-| | Question | Statut |
-|---|---|---|
-| **① Marché** | Quelle issue le marché juge-t-il la plus probable ? | Lecture factuelle. **Pas une recommandation** : au prix juste, miser sur le favori a une espérance nulle. |
-| **② Prix** | Où le meilleur prix disponible s'écarte-t-il le plus du consensus ? | Price shopping. Observation sur la dispersion des prix, **pas une prédiction**, et biaisée à la hausse. |
+Trois filtres, dans cet ordre :
 
-Le biais de ② mérite d'être compris : prendre le maximum sur N bookmakers retient
-disproportionnellement la cote périmée ou erronée, et l'effet est maximal sur les gros outsiders.
-Exemple réel du 2026-09-16 : sur Barcelone–Santander, ① donne la victoire à domicile à 91,8 %,
-tandis que ② pointe le **nul** à la cote 21,00 avec +11,8 % — un prix isolé sur une issue à 4 %,
-c'est-à-dire le cas où l'indicateur est le moins fiable.
+1. **Consensus sans le book généreux (leave-one-out).** Comparer un prix à un consensus qui
+   l'inclut est circulaire : le book généreux tire la médiane vers lui et masque son propre
+   écart.
+2. **Soutien.** Un prix isolé plus de 2 % au-dessus du deuxième meilleur n'est presque jamais une
+   opportunité : cote périmée, erreur, ou limite de mise dérisoire.
+3. **Robustesse à la méthode de dévig.** L'EV est recalculée sous les quatre méthodes. Si le
+   **signe** ne tient pas, le chiffre ne veut rien dire.
 
-Une colonne « Accord » signale les divergences, et un avertissement compte combien de matchs du
-jour sont concernés.
+| Verdict | Sens |
+|---|---|
+| 🟢 Écart soutenu | Les trois filtres passent. Le seul cas qui mérite un regard. |
+| 🟡 Écart isolé | Un seul book, ou prix très au-dessus du deuxième. Presque toujours illusoire. |
+| 🟠 Fragile | L'EV change de signe selon la méthode de dévig. Non interprétable. |
+| ⚪ Rien à signaler | Écart sous 1 %, ou moins de 6 bookmakers. |
+
+Le filtre 3 est le plus sévère, et c'est celui qui manquait. Exemple réel du 2026-09-18,
+Bayern Munich – Union Berlin : le nul à la cote 23,00 affichait **+6,9 % d'EV**. Recalculé sous
+les quatre méthodes, il va de **−16,8 % à +29,4 %**. Le chiffre mesurait le choix de méthode, pas
+le marché. C'est la conséquence directe de R3 : sous 5 % de probabilité, les méthodes de dévig
+divergent de 16,6 % en relatif — bien plus que les écarts qu'on croit détecter sur les outsiders.
+
+Ce jour-là, 2 matchs sur 5 passaient les trois filtres.
+
+**Même un 🟢 n'est pas une recommandation de pari.** C'est un écart de prix entre opérateurs à un
+instant, et il reste à vérifier la limite de mise.
 
 Un `⌀` devant un nom indique un **agrégat de marché**, pas un bookmaker : la cote existe quelque
 part, mais il faut consulter le tableau livre par livre pour savoir chez qui.
@@ -149,6 +164,7 @@ faisait apparaître comme « meilleur prix » une cote qui n'était plus disponi
 ```bash
 uv run odds collect            # une passe
 uv run odds collect --resume   # état de l'historique
+uv run odds credits            # crédits restants et projection de fin de mois
 ```
 
 Pinnacle n'étant plus publié après le **2026-01-14**, aucune mesure en avant n'est possible sans
@@ -254,7 +270,7 @@ src/odds/
 app/dashboard.py             tableau de bord Streamlit
 prereg/                      hypothèses pré-enregistrées, datées, avec leurs verdicts
 research/RESULTS.md          journal des résultats mesurés
-tests/                       182 tests, dont le test anti-fuite
+tests/                       192 tests, dont le test anti-fuite
 ```
 
 ## Tests

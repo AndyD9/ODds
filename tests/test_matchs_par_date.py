@@ -116,13 +116,72 @@ def test_probabilites_somment_a_un(bdd):
     assert (d.p_1 + d.p_N + d.p_2).to_numpy() == pytest.approx(np.ones(len(d)), abs=1e-9)
 
 
-def test_ecart_price_shopping_coherent(bdd):
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
-    for s in ("1", "N", "2"):
-        attendu = 100.0 * (res[f"p_{s}"] * res[f"best_{s}"] - 1.0)
+def test_ev_utilise_le_consensus_leave_one_out(bdd):
+    """L'EV doit se calculer contre le consensus SANS le book généreux.
+
+    L'inclure est circulaire : il tire la médiane vers lui et masque son
+    propre écart, ce qui sous-estime systématiquement l'EV.
+    """
+    r = ana.matchs_a_la_date("2026-10-01")
+    res, det = r["resume"].iloc[0], r["detail"]
+
+    for s, col in (("1", "p_1"), ("N", "p_N"), ("2", "p_2")):
+        autres = det[(det.bookmaker != res[f"book_{s}"])
+                     & (~det.bookmaker.isin(ana.HORS_CONSENSUS))]
+        assert res[f"p_loo_{s}"] == pytest.approx(float(np.median(autres[col])), abs=1e-9)
+        attendu = 100.0 * (res[f"p_loo_{s}"] * res[f"best_{s}"] - 1.0)
         assert res[f"ecart_{s}"] == pytest.approx(attendu, abs=1e-9)
+
     assert res.meilleur_ecart == pytest.approx(
         max(res.ecart_1, res.ecart_N, res.ecart_2), abs=1e-9)
+
+
+def test_le_book_genereux_est_bien_exclu(bdd):
+    """Vérification directe : le consensus leave-one-out diffère du
+    consensus complet dès que le meilleur prix est atypique."""
+    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    # _max_marche affiche 2.60 sur l'issue 1, très au-dessus des books réels
+    assert res.book_1 == "_max_marche"
+    assert res.p_loo_1 != pytest.approx(res.p_1, abs=1e-6), (
+        "le consensus leave-one-out est identique au consensus complet")
+
+
+def test_soutien_compte_les_books_au_meilleur_prix(bdd):
+    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    # 2.60 n'est affiché que par _max_marche
+    assert res.soutien_1 == 1
+    assert res.prime_1 > 0, "le meilleur prix dépasse le deuxième"
+
+
+def test_verdict_sur_un_consensus_indigent(bdd):
+    """Moins de books que le minimum -> aucun verdict positif possible."""
+    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    assert res.n_books < ana.N_BOOKS_MINI
+    assert res.verdict == "Trop peu de books"
+
+
+def test_ev_bornes_sur_les_quatre_methodes(bdd):
+    """ev_min et ev_max encadrent l'EV de la méthode retenue."""
+    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    assert res.ev_min <= res.ecart_prix <= res.ev_max + 1e-9
+    assert bool(res.ev_robuste) == bool(res.ev_min > 0)
+
+
+@pytest.mark.parametrize("champ,valeur,attendu", [
+    ({"n_books": 3}, None, "Trop peu de books"),
+    ({"n_books": 20, "ecart_prix": 0.2}, None, "Rien à signaler"),
+    ({"n_books": 20, "ecart_prix": 5.0, "prime_prix": 9.0, "soutien_prix": 1}, None,
+     "Écart isolé — prudence"),
+    ({"n_books": 20, "ecart_prix": 5.0, "prime_prix": 0.0, "soutien_prix": 3,
+      "ev_robuste": False}, None, "Fragile — dépend de la méthode"),
+    ({"n_books": 20, "ecart_prix": 5.0, "prime_prix": 0.0, "soutien_prix": 3,
+      "ev_robuste": True}, None, "Écart soutenu"),
+])
+def test_verdict_etats(champ, valeur, attendu):
+    base = {"n_books": 20, "ecart_prix": 0.0, "prime_prix": 0.0,
+            "soutien_prix": 3, "ev_robuste": True}
+    base.update(champ)
+    assert ana._verdict(pd.Series(base)) == attendu
 
 
 def test_date_sans_match(bdd, monkeypatch):

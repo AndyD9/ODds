@@ -19,7 +19,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from odds.analysis import (AGREGATS, AUTRE_INSTANT, analyser_livre, avec_cloture,
+from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
+                           SEUIL_PRIME_ISOLEE, analyser_livre, avec_cloture,
                            carte_information_tardive, carte_marges, charger, cible,
                            comparer_methodes, courbe_calibration, dates_disponibles,
                            ece, matchs_a_la_date, probabilites_marche)
@@ -60,6 +61,34 @@ st.sidebar.caption(
 )
 st.sidebar.warning("Cet outil ne produit **aucun signal de pari**. "
                    "Voir `research/RESULTS.md`.")
+
+
+# --- compteur de crédits The Odds API --------------------------------------
+# /sports ne compte pas dans le quota : le compteur est donc lu gratuitement.
+# Le cache évite seulement d'ajouter une latence réseau à chaque rerun.
+@st.cache_data(ttl=300, show_spinner=False)
+def _credits():
+    from odds import config
+    if not config.est_configure("ODDS_API_KEY"):
+        return None
+    from odds.data.oddsapi import credits
+    return credits()
+
+
+try:
+    _c = _credits()
+except Exception as _e:
+    _c = None
+    st.sidebar.caption(f"⚠️ Compteur de crédits indisponible : {_e}")
+
+if _c:
+    st.sidebar.divider()
+    st.sidebar.markdown("**Crédits The Odds API**")
+    st.sidebar.progress(min(1.0, _c["part_utilisee"]))
+    cg, cd = st.sidebar.columns(2)
+    cg.metric("Restants", f"{_c['restants']:,}")
+    cd.metric("Utilisés", f"{_c['utilises']:,}")
+    st.sidebar.caption(f"sur {_c['total']:,} ce mois-ci · lecture gratuite")
 
 
 # ==========================================================================
@@ -182,67 +211,94 @@ if page == "Matchs par date":
     m4.metric("Dispersion médiane", f"{res.dispersion.median():.2f} pts",
               help="Écart-type de P(1) entre bookmakers. Élevé = le marché est en désaccord.")
 
-    # --- les deux lectures, explicitement séparées -------------------------
-    st.subheader("Quelle issue ?")
-    g1, g2 = st.columns(2)
-    with g1:
-        st.markdown("**① Ce que le marché juge le plus probable**")
-        st.caption("Lecture factuelle des probabilités, marge retirée. "
-                   "**Ce n'est pas une recommandation de pari** : au prix juste, miser sur le "
-                   "favori a une espérance nulle. Le marché a déjà tout intégré — c'est "
-                   "précisément ce qu'a établi `research/RESULTS.md`.")
-    with g2:
-        st.markdown("**② Où le meilleur prix s'écarte le plus du consensus**")
-        st.caption("Price shopping : `(probabilité consensus × meilleure cote) − 1`. "
-                   "Observation sur la **dispersion des prix**, pas une prédiction. "
-                   "Biaisé à la hausse — le maximum sur N bookmakers retient "
-                   "disproportionnellement la cote périmée ou erronée, et l'effet est "
-                   "maximal sur les gros outsiders.")
+    # --- verdict ----------------------------------------------------------
+    st.subheader("Que faire de ces matchs ?")
 
-    n_desaccord = int((~res.accord).sum())
-    if n_desaccord:
-        st.warning(f"**Les deux lectures divergent sur {n_desaccord} match(s) sur {len(res)}.** "
-                   "Quand elles divergent, c'est presque toujours parce qu'un bookmaker affiche "
-                   "un prix isolé sur un outsider — le cas où l'indicateur ② est le moins fiable.")
+    ORDRE = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
+             "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
+             "Rien à signaler": 4}
+    COULEUR = {"Écart soutenu": "🟢", "Écart isolé — prudence": "🟡",
+               "Fragile — dépend de la méthode": "🟠", "Trop peu de books": "⚪",
+               "Rien à signaler": "⚪"}
+    res = res.assign(_ordre=res.verdict.map(ORDRE).fillna(9)).sort_values(
+        ["_ordre", "kickoff"]).reset_index(drop=True)
+
+    n_sout = int((res.verdict == "Écart soutenu").sum())
+    if n_sout == 0:
+        st.info("**Aucun match ne présente d'écart de prix soutenu.** "
+                "C'est le cas le plus fréquent, et c'est le résultat attendu : "
+                "le marché est efficient.")
+    else:
+        st.success(f"**{n_sout} match(s) sur {len(res)}** présentent un écart de prix "
+                   "soutenu par plusieurs bookmakers et robuste à la méthode de dévig.")
+
+    with st.expander("Comment le verdict est calculé", expanded=(n_sout == 0)):
+        st.markdown(f"""
+Le verdict ne prédit **rien**. Il répond à une seule question : le meilleur prix
+disponible s'écarte-t-il assez du consensus des **autres** bookmakers pour ne pas être du bruit ?
+
+Trois filtres, dans cet ordre :
+
+1. **Consensus sans le book généreux.** Comparer un prix au consensus qui l'inclut est
+   circulaire : le book généreux tire la médiane vers lui et masque son propre écart. Le
+   consensus est donc recalculé **sans lui**.
+2. **Soutien.** Un prix isolé plus de {SEUIL_PRIME_ISOLEE:.0f} % au-dessus du deuxième meilleur
+   n'est presque jamais une opportunité : cote périmée, erreur, ou limite de mise dérisoire.
+3. **Robustesse à la méthode de dévig.** L'EV est recalculée sous les quatre méthodes
+   (Shin, power, odds ratio, proportionnelle). Si le **signe** ne tient pas, le chiffre ne veut
+   rien dire. C'est le filtre le plus sévère : `research/RESULTS.md` (R3) a mesuré que sous 5 %
+   de probabilité, les méthodes divergent de **16,6 % en relatif** — bien plus que les écarts
+   qu'on croit détecter sur les outsiders.
+
+| Verdict | Sens |
+|---|---|
+| 🟢 Écart soutenu | Les trois filtres passent. Le seul cas qui mérite un regard. |
+| 🟡 Écart isolé | Un seul book, ou prix très au-dessus du deuxième. Presque toujours illusoire. |
+| 🟠 Fragile | L'EV change de signe selon la méthode de dévig. Le chiffre n'est pas interprétable. |
+| ⚪ Rien à signaler | Écart sous {SEUIL_EV_MINI:.0f} %, ou moins de {N_BOOKS_MINI} bookmakers. |
+
+**Même un 🟢 n'est pas une recommandation de pari.** C'est un écart de prix entre opérateurs à un
+instant. Il reste à vérifier la limite de mise, et le fait que `research/RESULTS.md` a établi
+qu'aucun modèle sur données publiques ne bat le marché.
+""")
 
     st.subheader("Matchs du jour")
     lib = {"1": "Domicile", "N": "Nul", "2": "Extérieur"}
 
     def nom_book(b):
-        """Un agrégat n'est pas un endroit où miser : le dire explicitement."""
         return {"_max_marche": "⌀ meilleur du marché",
                 "_moyenne_marche": "⌀ moyenne marché"}.get(b, b)
+
     vue = pd.DataFrame({
+        "": res.verdict.map(COULEUR),
+        "Verdict": res.verdict,
         "Heure": res.kickoff.str[11:16],
         "Champ.": res.league.astype(str),
         "Domicile": res.home_team, "Extérieur": res.away_team,
-        "P(1) %": 100 * res.p_1, "P(N) %": 100 * res.p_N, "P(2) %": 100 * res.p_2,
-        "① Marché": res.issue_probable.map(lib),
-        "① Prob. %": 100 * res.p_probable,
-        "② Prix": res.issue_prix.map(lib),
-        "② Cote": res.cote_prix,
-        "② Chez": res.book_prix.map(nom_book),
-        "② Écart %": res.ecart_prix,
-        "Accord": np.where(res.accord, "✓", "✗"),
-        "Books": res.n_books, "Marge %": res.marge, "Dispersion": res.dispersion,
+        "Marché juge": res.issue_probable.map(lib),
+        "Prob. %": 100 * res.p_probable,
+        "Issue visée": res.issue_prix.map(lib),
+        "Cote": res.cote_prix,
+        "Chez": res.book_prix.map(nom_book),
+        "EV %": res.ecart_prix,
+        "EV min %": res.ev_min, "EV max %": res.ev_max,
+        "Books au prix": res.soutien_prix,
+        "Books": res.n_books,
     })
     if historique and "score" in res.columns:
-        vue.insert(4, "Score", res.score.to_numpy())
-        vue.insert(5, "Rés.", res.resultat.map(
+        vue.insert(6, "Score", res.score.to_numpy())
+        vue.insert(7, "Rés.", res.resultat.map(
             {"H": "Domicile", "D": "Nul", "A": "Extérieur"}).to_numpy())
 
     st.dataframe(
-        vue.style.format({**{c: "{:.1f}" for c in ["P(1) %", "P(N) %", "P(2) %", "① Prob. %"]},
-                          **{c: "{:.2f}" for c in ["② Cote", "Marge %", "Dispersion"]},
-                          "② Écart %": "{:+.2f}"})
-           .background_gradient(cmap="Blues", subset=["P(1) %", "P(N) %", "P(2) %"])
-           .background_gradient(cmap="RdYlGn", subset=["② Écart %"], vmin=-5, vmax=5),
+        vue.style.format({"Prob. %": "{:.1f}", "Cote": "{:.2f}",
+                          "EV %": "{:+.2f}", "EV min %": "{:+.2f}", "EV max %": "{:+.2f}"})
+           .background_gradient(cmap="RdYlGn", subset=["EV min %"], vmin=-3, vmax=3),
         use_container_width=True, hide_index=True, height=min(560, 44 + 36 * len(vue)))
 
-    st.caption("**① Marché** = issue la plus probable selon les cotes dévigées. "
-               "**② Prix** = issue dont le meilleur prix disponible s'écarte le plus du "
-               "consensus, avec le bookmaker qui l'affiche. Les deux répondent à des "
-               "questions différentes et ne sont pas interchangeables.")
+    st.caption("**EV min / EV max** = espérance sous la méthode de dévig la plus défavorable et "
+               "la plus favorable. Si EV min est négative, l'écart n'est pas interprétable. "
+               "**Books au prix** = nombre de bookmakers à moins de 1 % du meilleur prix.")
 
     st.divider()
     st.subheader("Détail d'un match")
@@ -252,20 +308,41 @@ if page == "Matchs par date":
     ligne = res.loc[libelles == choix].iloc[0]
     fk = ligne.fixture_key
 
-    d1, d2, d3 = st.columns(3)
-    d1.metric("① Marché juge le plus probable", lib[ligne.issue_probable],
+    st.markdown(f"### {COULEUR.get(ligne.verdict, '')} {ligne.verdict}")
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Marché juge le plus probable", lib[ligne.issue_probable],
               f"{100 * ligne.p_probable:.1f} %", delta_color="off")
-    d2.metric("② Meilleur écart de prix", lib[ligne.issue_prix],
-              f"{ligne.ecart_prix:+.2f} %", delta_color="normal")
-    d3.metric("② Meilleure cote", f"{ligne.cote_prix:.2f}",
+    d2.metric("Issue visée par le prix", lib[ligne.issue_prix],
+              f"{ligne.ecart_prix:+.2f} % d'EV", delta_color="normal")
+    d3.metric("Meilleure cote", f"{ligne.cote_prix:.2f}",
               nom_book(ligne.book_prix), delta_color="off")
+    d4.metric("EV selon la méthode",
+              f"{ligne.ev_min:+.1f} → {ligne.ev_max:+.1f} %",
+              "robuste" if ligne.ev_robuste else "change de signe",
+              delta_color="normal" if ligne.ev_robuste else "inverse")
+
     if str(ligne.book_prix).startswith("_"):
         st.caption("⌀ = agrégat de marché, pas un bookmaker : cette cote indique le meilleur "
                    "prix constaté, sans dire chez qui. Voir le tableau livre par livre.")
+
+    if not ligne.ev_robuste:
+        st.error(f"**L'EV change de signe selon la méthode de dévig** "
+                 f"({ligne.ev_min:+.1f} % à {ligne.ev_max:+.1f} %). Le chiffre affiché n'est "
+                 "pas interprétable : il mesure surtout le choix de méthode, pas le marché. "
+                 "C'est le cas typique des issues à faible probabilité.")
+    elif ligne.verdict == "Écart isolé — prudence":
+        st.warning(f"Le meilleur prix est {ligne.prime_prix:+.1f} % au-dessus du deuxième, "
+                   f"et seuls {int(ligne.soutien_prix)} bookmaker(s) l'affichent. Un prix isolé "
+                   "est presque toujours une cote périmée, une erreur, ou assortie d'une limite "
+                   "de mise dérisoire.")
+    elif ligne.verdict == "Écart soutenu":
+        st.success(f"Écart soutenu par {int(ligne.soutien_prix)} bookmakers et robuste aux "
+                   "quatre méthodes de dévig. C'est le seul cas qui mérite un regard — "
+                   "vérifiez la limite de mise avant toute chose.")
     if not ligne.accord:
-        st.warning("Les deux lectures divergent sur ce match. ② porte sur une issue que le "
-                   "marché juge moins probable : vérifiez dans le tableau ci-dessous si "
-                   "un seul bookmaker est à l'origine de l'écart.")
+        st.caption("Le prix vise une issue que le marché juge moins probable. Regardez dans le "
+                   "tableau ci-dessous si un seul bookmaker est à l'origine de l'écart.")
     d = det[det.fixture_key == fk].copy()
     d["type"] = np.where(d.bookmaker.isin(AGREGATS), "agrégat",
                 np.where(d.bookmaker.isin(AUTRE_INSTANT), "autre instant", "book"))
@@ -584,6 +661,50 @@ elif page == "Collecte en cours":
                    "l'historique — conservées telles quelles.)")
     else:
         st.success("Toutes les passes récentes au vert.")
+
+    if _c:
+        from odds.data.collect import conso_credits
+        from odds.data.oddsapi import projection
+
+        st.subheader("Crédits The Odds API")
+        conso = conso_credits()
+        actifs = conso[conso.credits > 0].tail(7) if len(conso) else conso
+        par_jour = float(actifs.credits.mean()) if len(actifs) else 0.0
+        p = projection(_c["restants"], par_jour)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Restants", f"{_c['restants']:,}", f"sur {_c['total']:,}",
+                  delta_color="off")
+        k2.metric("Rythme", f"{par_jour:.1f} /jour",
+                  help="Moyenne sur les 7 derniers jours où des crédits ont été consommés.")
+        k3.metric("Jours avant réinit.", p["jours_restants_mois"])
+        k4.metric("Besoin d'ici là", f"{p['besoin_fin_de_mois']:.0f}",
+                  "✅ suffisant" if p["suffisant"] else "⚠️ insuffisant",
+                  delta_color="normal" if p["suffisant"] else "inverse")
+
+        st.progress(min(1.0, _c["part_utilisee"]),
+                    text=f"{100 * _c['part_utilisee']:.1f} % du quota mensuel consommé")
+
+        if not p["suffisant"] and par_jour > 0:
+            st.error(f"Au rythme actuel, épuisement estimé le **{p['epuisement']}**, "
+                     f"avant la réinitialisation. Réduisez `ODDS_API_SPORTS` ou "
+                     f"`ODDS_API_BUDGET_JOUR`.")
+
+        if len(conso) > 1:
+            ch = alt.Chart(conso).mark_bar().encode(
+                x=alt.X("jour:N", title=None),
+                y=alt.Y("credits:Q", title="Crédits consommés"),
+                tooltip=["jour", "credits", "passes"],
+            ).properties(height=180)
+            st.altair_chart(ch, use_container_width=True)
+
+        ecart = _c["utilises"] - int(conso.credits.sum() if len(conso) else 0)
+        if ecart > 0:
+            st.caption(f"ℹ️ Le compteur de l'API indique {_c['utilises']:,} crédits utilisés, "
+                       f"contre {int(conso.credits.sum()):,} enregistrés par nos passes "
+                       f"({ecart:,} d'écart). L'écart correspond aux appels faits hors "
+                       "collecte — exploration manuelle, ou anciens lancements de tests "
+                       "avant la mise en place du garde-fou.")
 
     st.subheader("Fraîcheur des flux amont")
     fx = r.get("flux", pd.DataFrame())

@@ -210,6 +210,50 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_credits(args) -> int:
+    from odds import config
+    from odds.data.collect import conso_credits
+    from odds.data.oddsapi import credits, projection
+
+    if not config.est_configure("ODDS_API_KEY"):
+        print("ODDS_API_KEY non configurée.  uv run odds config --init")
+        return 1
+
+    c = credits()
+    barre_n = 32
+    plein = int(barre_n * c["part_utilisee"])
+    barre = "█" * plein + "░" * (barre_n - plein)
+
+    print(f"\nCrédits The Odds API")
+    print(f"  [{barre}]  {100 * c['part_utilisee']:.1f} %")
+    print(f"  {c['restants']:,} restants sur {c['total']:,}  "
+          f"({c['utilises']:,} utilisés ce mois-ci)")
+    print("  (compteur lu via /sports, qui ne coûte aucun crédit)")
+
+    d = conso_credits()
+    recents = d[d.credits > 0].tail(7)
+    par_jour = float(recents.credits.mean()) if len(recents) else 0.0
+
+    if len(d):
+        print("\nConsommation par jour :")
+        print(_fmt(d.tail(10).rename(
+            columns={"jour": "Jour", "credits": "Crédits", "passes": "Passes"})))
+
+    p = projection(c["restants"], par_jour)
+    print(f"\nRythme sur les 7 derniers jours actifs : {par_jour:.1f} crédits/jour")
+    print(f"Jours restants avant réinitialisation   : {p['jours_restants_mois']}")
+    if par_jour > 0:
+        print(f"Besoin d'ici la fin du mois             : {p['besoin_fin_de_mois']:.0f} crédits")
+        if p["suffisant"]:
+            marge = c["restants"] - p["besoin_fin_de_mois"]
+            print(f"✅ Suffisant, avec {marge:.0f} crédits de marge.")
+        else:
+            print(f"⚠️  Insuffisant : épuisement estimé le {p['epuisement']}.")
+            print("   Réduisez ODDS_API_SPORTS ou ODDS_API_BUDGET_JOUR.")
+    print()
+    return 0
+
+
 def cmd_app(args) -> int:
     app = RACINE / "app" / "dashboard.py"
     print(f"Lancement du tableau de bord : {app}")
@@ -252,6 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     cf.add_argument("--init", action="store_true",
                     help="créer .env à partir de .env.example")
     cf.set_defaults(func=cmd_config)
+
+    cr = sub.add_parser("credits", help="crédits The Odds API restants et projection")
+    cr.set_defaults(func=cmd_credits)
 
     a = sub.add_parser("app", help="lancer le tableau de bord")
     a.add_argument("--port", type=int, default=8501)

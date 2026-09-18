@@ -401,6 +401,20 @@ def collecter(chemin_bdd: Path | None = None, verbose: bool = True) -> dict:
             "credits": credits, "credits_restants": restants}
 
 
+def conso_credits(chemin_bdd: Path | None = None, jours: int = 30) -> pd.DataFrame:
+    """Crédits consommés par jour, d'après nos propres passes."""
+    con = _connexion(chemin_bdd)
+    try:
+        d = pd.read_sql(
+            "SELECT substr(demarre_a, 1, 10) AS jour, "
+            "SUM(COALESCE(credits_utilises, 0)) AS credits, COUNT(*) AS passes "
+            "FROM collecte_run GROUP BY jour ORDER BY jour DESC LIMIT ?",
+            con, params=(jours,))
+    finally:
+        con.close()
+    return d.sort_values("jour").reset_index(drop=True) if len(d) else d
+
+
 def etat_flux(chemin_bdd: Path | None = None) -> pd.DataFrame:
     """Fraîcheur de chaque flux amont, et période qu'il couvre.
 

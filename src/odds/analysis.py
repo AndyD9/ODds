@@ -346,8 +346,37 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
         cons = cons.merge(b, on="fixture_key", how="left")
     cons = cons.merge(meta, on="fixture_key", how="left")
 
-    for sel in ("1", "N", "2"):
-        cons[f"ecart_{sel}"] = 100.0 * (cons[f"p_{sel}"] * cons[f"best_{sel}"] - 1.0)
+    # --- EV « leave-one-out » et soutien du meilleur prix ------------------
+    #
+    # Deux corrections indispensables pour que le chiffre veuille dire
+    # quelque chose :
+    #
+    # 1) LEAVE-ONE-OUT. Comparer le meilleur prix à un consensus qui
+    #    l'inclut est circulaire : le book généreux tire la médiane vers
+    #    lui et masque son propre écart. On recalcule donc le consensus
+    #    SANS le bookmaker qui offre ce prix.
+    #
+    # 2) SOUTIEN. Un prix isolé de 3 % au-dessus du deuxième meilleur n'est
+    #    presque jamais une opportunité : c'est une cote périmée, une erreur,
+    #    ou une limite de mise dérisoire. On mesure donc l'écart au deuxième
+    #    meilleur prix, qui sépare l'anomalie isolée du désaccord réel.
+    for sel, col in (("1", "cote_1"), ("N", "cote_N"), ("2", "cote_2")):
+        p_loo, second, n_soutien = [], [], []
+        for fk, best_book, best_cote in zip(cons.fixture_key, cons[f"book_{sel}"],
+                                            cons[f"best_{sel}"]):
+            g = dispo[dispo.fixture_key == fk]
+            autres = g[g.bookmaker != best_book]
+            reels = autres[~autres.bookmaker.isin(HORS_CONSENSUS)]
+            src = reels if len(reels) else autres
+            p_loo.append(float(np.median(src[f"p_{sel}"])) if len(src) else np.nan)
+            second.append(float(autres[col].max()) if len(autres) else np.nan)
+            n_soutien.append(int((g[col] >= best_cote * 0.99).sum()))
+        cons[f"p_loo_{sel}"] = p_loo
+        cons[f"second_{sel}"] = second
+        cons[f"soutien_{sel}"] = n_soutien
+        cons[f"ecart_{sel}"] = 100.0 * (np.array(p_loo) * cons[f"best_{sel}"] - 1.0)
+        cons[f"prime_{sel}"] = 100.0 * (cons[f"best_{sel}"] / np.array(second) - 1.0)
+
     cons["meilleur_ecart"] = cons[["ecart_1", "ecart_N", "ecart_2"]].max(axis=1)
 
     # --- deux lectures distinctes, à ne jamais confondre -------------------
@@ -369,15 +398,89 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
 
     ecarts = cons[["ecart_1", "ecart_N", "ecart_2"]].to_numpy()
     j = ecarts.argmax(axis=1)
+    lig = np.arange(len(cons))
     cons["issue_prix"] = labels[j]
-    cons["ecart_prix"] = ecarts[np.arange(len(cons)), j]
-    cons["cote_prix"] = cons[["best_1", "best_N", "best_2"]].to_numpy()[np.arange(len(cons)), j]
-    cons["book_prix"] = cons[["book_1", "book_N", "book_2"]].to_numpy()[np.arange(len(cons)), j]
+    cons["ecart_prix"] = ecarts[lig, j]
+    cons["cote_prix"] = cons[["best_1", "best_N", "best_2"]].to_numpy()[lig, j]
+    cons["book_prix"] = cons[["book_1", "book_N", "book_2"]].to_numpy()[lig, j]
+    cons["prime_prix"] = cons[["prime_1", "prime_N", "prime_2"]].to_numpy()[lig, j]
+    cons["soutien_prix"] = cons[["soutien_1", "soutien_N", "soutien_2"]].to_numpy()[lig, j]
+    cons["p_prix"] = cons[["p_loo_1", "p_loo_N", "p_loo_2"]].to_numpy()[lig, j]
     cons["accord"] = cons.issue_probable == cons.issue_prix
+
+    # --- robustesse de l'EV à la méthode de dévig --------------------------
+    #
+    # R3 a mesuré que sous 5 % de probabilité, les méthodes de dévig
+    # divergent de 16,6 % EN RELATIF. Un écart de +7 % d'EV sur un outsider
+    # est donc entièrement à l'intérieur du bruit de la méthode : il change
+    # de signe selon qu'on retient Shin, power ou odds ratio.
+    #
+    # On recalcule donc l'EV sous les QUATRE méthodes. Si le signe ne tient
+    # pas, le chiffre ne veut rien dire, quel que soit son niveau.
+    cons[["ev_min", "ev_max"]] = _ev_toutes_methodes(cons, large, dispo)
+    cons["ev_robuste"] = cons.ev_min > 0
+
+    cons["verdict"] = [_verdict(r) for _, r in cons.iterrows()]
 
     cons = cons.sort_values("kickoff").reset_index(drop=True)
     return {"source": source, "fournisseur": fournisseur,
             "resume": cons, "detail": detail}
+
+
+def _ev_toutes_methodes(cons: pd.DataFrame, large: pd.DataFrame,
+                        dispo: pd.DataFrame) -> pd.DataFrame:
+    """EV minimale et maximale de la sélection retenue, sur les 4 méthodes."""
+    idx_sel = {"1": 0, "N": 1, "2": 2}
+    cotes = large[["home", "draw", "away"]].to_numpy(float)
+    cles = large.reset_index()[["fixture_key", "bookmaker"]]
+
+    par_methode = {}
+    for m in ("shin", "power", "odds_ratio", "proportional"):
+        p = devig_matrix(cotes, m)
+        t = cles.copy()
+        t[["p_1", "p_N", "p_2"]] = p
+        par_methode[m] = t
+
+    bornes = []
+    for fk, sel, best_book, best_cote in zip(
+            cons.fixture_key, cons.issue_prix, cons.book_prix, cons.cote_prix):
+        col = ["p_1", "p_N", "p_2"][idx_sel[sel]]
+        evs = []
+        for t in par_methode.values():
+            g = t[(t.fixture_key == fk) & (t.bookmaker != best_book)]
+            g = g[~g.bookmaker.isin(HORS_CONSENSUS)]
+            if len(g) == 0:
+                continue
+            evs.append(100.0 * (float(np.median(g[col])) * best_cote - 1.0))
+        bornes.append((min(evs), max(evs)) if evs else (np.nan, np.nan))
+    return pd.DataFrame(bornes, columns=["ev_min", "ev_max"], index=cons.index)
+
+
+# Seuils du verdict. Fixés ici, pas au fil de l'affichage, pour être
+# discutables et modifiables en un seul endroit.
+SEUIL_EV_MINI = 1.0        # en % — en deçà, le bruit domine
+SEUIL_PRIME_ISOLEE = 2.0   # en % au-dessus du 2e meilleur prix = anomalie isolée
+SOUTIEN_MINI = 2           # nombre de books à 1 % du meilleur prix
+N_BOOKS_MINI = 6           # consensus indigent en dessous
+
+
+def _verdict(r) -> str:
+    """Traduit les chiffres en une conclusion unique et lisible.
+
+    Rappel de cadrage : ce verdict ne prédit RIEN. Il dit seulement si le
+    meilleur prix disponible s'écarte du consensus des autres bookmakers
+    d'assez pour ne pas être du bruit, et si cet écart est soutenu par
+    plusieurs opérateurs ou porté par un seul.
+    """
+    if r.n_books < N_BOOKS_MINI:
+        return "Trop peu de books"
+    if not np.isfinite(r.ecart_prix) or r.ecart_prix < SEUIL_EV_MINI:
+        return "Rien à signaler"
+    if r.prime_prix > SEUIL_PRIME_ISOLEE or r.soutien_prix < SOUTIEN_MINI:
+        return "Écart isolé — prudence"
+    if not r.get("ev_robuste", True):
+        return "Fragile — dépend de la méthode"
+    return "Écart soutenu"
 
 
 def dates_disponibles() -> dict:

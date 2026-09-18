@@ -172,3 +172,43 @@ def _normaliser(evts: list, sport: str) -> pd.DataFrame:
     d["book_updated_at"] = (pd.to_datetime(d.book_updated_at, utc=True, errors="coerce")
                               .dt.tz_convert(None).dt.strftime("%Y-%m-%d %H:%M:%S"))
     return d
+
+
+# --- compteur de crédits ---------------------------------------------------
+
+def credits() -> dict:
+    """GRATUIT. Lit le quota via les en-têtes de ``/sports``.
+
+    ``/sports`` ne compte pas dans le quota : on obtient donc le compteur
+    autoritatif sans rien dépenser. Inutile de se fier à la dernière valeur
+    stockée, qui peut dater.
+    """
+    _, h = _get("/sports")
+    utilises = int(h["utilises"] or 0)
+    restants = int(h["restants"] or 0)
+    total = utilises + restants
+    return {"utilises": utilises, "restants": restants, "total": total,
+            "part_utilisee": (utilises / total) if total else 0.0}
+
+
+def projection(restants: int, par_jour: float, maintenant=None) -> dict:
+    """Combien de temps le quota tient-il au rythme observé ?
+
+    Le quota The Odds API se réinitialise mensuellement. On compare donc
+    l'autonomie au nombre de jours restant avant la fin du mois.
+    """
+    maintenant = maintenant or datetime.now(timezone.utc)
+    debut_mois_suivant = (maintenant.replace(day=1) + timedelta(days=32)).replace(day=1)
+    jours_restants = (debut_mois_suivant.date() - maintenant.date()).days
+
+    autonomie = (restants / par_jour) if par_jour > 0 else float("inf")
+    besoin = par_jour * jours_restants
+    return {
+        "jours_restants_mois": jours_restants,
+        "conso_par_jour": par_jour,
+        "autonomie_jours": autonomie,
+        "besoin_fin_de_mois": besoin,
+        "suffisant": restants >= besoin,
+        "epuisement": (maintenant + timedelta(days=autonomie)).date()
+                      if autonomie != float("inf") and autonomie < 400 else None,
+    }
