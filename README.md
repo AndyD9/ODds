@@ -5,8 +5,9 @@ calibration réelle du marché, cartographier les championnats.
 
 ## Ce que l'outil fait — et ne fait pas
 
-**Il ne produit aucun signal de pari.** Ce n'est pas une limitation temporaire, c'est une
-conclusion mesurée.
+Outil personnel à usage éducatif. Il affiche des probabilités et tient un carnet de paris **en
+papier**. Il ne prétend pas détenir un avantage, et cette prudence n'est pas une posture : c'est
+une conclusion mesurée, cinq fois.
 
 Le projet a commencé comme un moteur de probabilités destiné à détecter des écarts exploitables.
 La première étape a consisté à tester cette hypothèse avant de construire quoi que ce soit.
@@ -18,10 +19,30 @@ Résultat, sur 150 626 matchs et 23 championnats ([research/RESULTS.md](research
 | L'écart est meilleur sur les petits championnats | **Rejetée** — corrélation marge/écart = +0,057 |
 | Le modèle apporte de l'information orthogonale | **Rejetée** — poids de mélange négatif |
 | Dixon-Coles bat la cote précoce | **Rejetée** — 5,9× l'information tardive totale |
+| Dixon-Coles apporte quelque chose sur les marchés de **buts** | **Rejetée** — perd sur tous les marchés, toutes les strates (R9) |
 | Shin calibre mieux que la normalisation proportionnelle | **Confirmée** |
 
-Un modèle de comptage sur données publiques ne bat ni la clôture, ni le prix précoce, nulle part.
-Ce qui reste — et qui est réel — est outillé ici.
+Un modèle de comptage sur données publiques ne bat ni la clôture, ni le prix précoce, nulle part
+— et pas davantage sur les buts, y compris là où le marché ne cote rien. **Le prix reste la
+meilleure information disponible.** Ce qui reste — et qui est réel — est outillé ici.
+
+## Marchés de buts
+
+L'outil répond à « quelle probabilité pour 3 buts ou plus ? » et « pour que cette équipe en
+marque 2 ? ». Ces marchés ne sont pas cotés par les sources accessibles : ils sont **dérivés**
+d'une matrice de score ajustée pour reproduire les prix réellement affichés.
+
+La qualité de cette dérivation est mesurée, et affichée match par match :
+
+| situation | écart mesuré entre probabilité annoncée et fréquence observée |
+|---|---|
+| une cote over/under contraint la matrice | **0,7 point** — la calibration du marché lui-même |
+| dérivé du 1X2 seul, match équilibré (favori ≤ 60 %) | moins d'un point |
+| dérivé du 1X2 seul, favori à 80 % et plus | 4 à 5 points, toujours en **surestimant** les buts |
+
+D'où le réglage `ODDS_API_MARKETS=h2h,totals` : une cote de totaux améliore aussi les marchés
+que personne ne cote — sur « le domicile marque 2 buts ou plus », l'erreur de calibration passe
+de 0,021 à 0,007.
 
 ## Installation
 

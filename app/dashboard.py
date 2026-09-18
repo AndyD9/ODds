@@ -1,9 +1,10 @@
-"""Tableau de bord — analyse des probabilités de marché.
+"""Tableau de bord — probabilités de marché et marchés de buts.
 
-Périmètre assumé : cet outil ne produit AUCUN signal de pari. Il a été établi
-(research/RESULTS.md) qu'un modèle de comptage sur données publiques ne bat ni
-la clôture ni le prix précoce. Ce qui reste utile et vérifié : retirer
-correctement la marge, mesurer la calibration, cartographier les marchés.
+Périmètre (prereg 0003 §1) : outil personnel à usage éducatif, suivi de paris
+en **papier** uniquement. Ce qu'il montre est encadré par deux mesures : ni
+Dixon-Coles ni aucune dérivation ne bat le prix de marché, sur le 1X2
+(RESULTS R8) comme sur les buts (R9). Le prix reste la meilleure information
+disponible ; l'outil sert à le lire correctement, pas à prétendre le battre.
 """
 
 from __future__ import annotations
@@ -19,6 +20,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import buts_ui  # noqa: E402  — marchés de buts
+import paris_ui  # noqa: E402  — carnet papier
+import theme  # noqa: E402  — habillage, doit suivre l'ajout du chemin
+
 from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
                            SEUIL_PRIME_ISOLEE, analyser_livre, avec_cloture,
                            carte_information_tardive, carte_marges, charger, cible,
@@ -28,9 +34,9 @@ from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
 
 st.set_page_config(page_title="Analyse des probabilités de marché",
                    page_icon="📊", layout="wide")
+theme.appliquer()
 
-COULEURS = {"shin": "#2563eb", "power": "#059669",
-            "odds_ratio": "#d97706", "proportional": "#dc2626"}
+COULEURS = theme.COULEURS_METHODE
 
 
 @st.cache_data(show_spinner="Chargement des données…")
@@ -53,15 +59,18 @@ except FileNotFoundError as e:
 clo = avec_cloture(df)
 
 st.sidebar.title("📊 Probabilités de marché")
-page = st.sidebar.radio("Page", ["Matchs par date", "Dévig d'un livre",
-                                 "Calibration du marché", "Cartographie",
-                                 "Explorateur de matchs", "Collecte en cours"])
+page = st.sidebar.radio("Page", ["Matchs par date", "Mes paris",
+                                 "Dévig d'un livre", "Calibration du marché",
+                                 "Cartographie", "Explorateur de matchs",
+                                 "Collecte en cours"])
 st.sidebar.caption(
     f"{len(df):,} matchs · {len(clo):,} avec clôture Pinnacle\n\n"
     f"{clo.date.min().date()} → {clo.date.max().date()}"
 )
-st.sidebar.warning("Cet outil ne produit **aucun signal de pari**. "
-                   "Voir `research/RESULTS.md`.")
+st.sidebar.warning(
+    "Outil personnel, **paris en papier uniquement**. Ni le modèle ni la "
+    "dérivation ne battent le prix de marché — mesuré sur le 1X2 (R8) comme "
+    "sur les buts (R9). Voir `research/RESULTS.md`.")
 
 
 # --- compteur de crédits The Odds API --------------------------------------
@@ -229,34 +238,45 @@ if page == "Matchs par date":
             {"1": r.home_team, "N": "Match nul", "2": r.away_team}[r.issue_probable]
             for _, r in res.iterrows()]
         prono = pd.DataFrame({
-            "": res.confiance.map(NIV_ICONE),
-            "Confiance": res.confiance,
+            "Confiance": [theme.badge(c, theme.TONS_CONFIANCE.get(c, "outline"))
+                          for c in res.confiance],
             "Heure": res.kickoff.str[11:16],
-            "Match": res.home_team + " – " + res.away_team,
+            "Champ.": [theme.badge(c) for c in res.league.astype(str)],
+            "Domicile": res.home_team,
+            "Extérieur": res.away_team,
+            "Probabilités (1 · N · 2)": [theme.barre_1n2(a, b, c) for a, b, c
+                                         in zip(res.p_1, res.p_N, res.p_2)],
             "Pronostic": issue_txt,
-            "Issue": res.issue_probable.map(lib),
-            "Marché %": 100 * res.p_probable,
-            "Réussite hist. %": 100 * res.reussite_hist,
-            "± pts": 100 * res.ic95_hist,
-            "Échec hist. %": 100 * res.echoue_hist,
-            "n hist.": res.n_hist,
+            "Marché %": (100 * res.p_probable).map("{:.1f}".format),
+            "Réussite hist. %": (100 * res.reussite_hist).map("{:.1f}".format),
+            "± pts": (100 * res.ic95_hist).map("{:.1f}".format),
+            "Échec hist. %": (100 * res.echoue_hist).map("{:.1f}".format),
+            "n hist.": res.n_hist.map("{:,}".format),
             "Books": res.n_books,
         })
+        prono.insert(0, "Pari", paris_ui.marque_paris(res.fixture_key))
+        colonnes_html = ["Pari", "Confiance", "Champ.",
+                         "Probabilités (1 · N · 2)"]
         if historique and "score" in res.columns:
-            prono.insert(5, "Score", res.score.to_numpy())
-            prono.insert(6, "Résultat", res.resultat.map(
+            juste = (res.resultat.map({"H": "1", "D": "N", "A": "2"})
+                     == res.issue_probable)
+            # Position relative : le tableau gagne et perd des colonnes selon
+            # le contexte, des index en dur se décalent en silence.
+            ou = prono.columns.get_loc("Marché %")
+            prono.insert(ou, "Score", res.score.to_numpy())
+            prono.insert(ou + 1, "Résultat", res.resultat.map(
                 {"H": "Domicile", "D": "Nul", "A": "Extérieur"}).to_numpy())
-            prono.insert(7, "Vu juste", np.where(
-                res.resultat.map({"H": "1", "D": "N", "A": "2"}) == res.issue_probable,
-                "✅", "❌"))
+            prono.insert(ou + 2, "Vu juste",
+                         [theme.icone_oui_non(bool(j)) for j in juste])
+            colonnes_html.append("Vu juste")
 
-        st.dataframe(
-            prono.style.format({"Marché %": "{:.1f}", "Réussite hist. %": "{:.1f}",
-                                "± pts": "{:.1f}", "Échec hist. %": "{:.1f}",
-                                "n hist.": "{:,}"})
-                 .background_gradient(cmap="RdYlGn", subset=["Marché %"], vmin=33, vmax=95),
-            use_container_width=True, hide_index=True,
-            height=min(520, 44 + 36 * len(prono)))
+        with st.container(border=True):
+            theme.titre_section("Matchs du jour")
+            theme.tableau(
+                prono, html=colonnes_html,
+                aligne_droite=["Marché %", "Réussite hist. %", "± pts",
+                               "Échec hist. %", "n hist.", "Books"],
+                classes={"Heure": "od-mono"})
 
         meilleur = res.iloc[0]
         nom = {"1": meilleur.home_team, "N": "le match nul",
@@ -285,7 +305,7 @@ Deux enseignements de cette mesure :
             tbl = fiabilite_historique()
             ch = alt.Chart(tbl.assign(annonce=100 * tbl.p_moyenne,
                                       observe=100 * tbl.reussite)).mark_circle(
-                size=120, color="#2563eb").encode(
+                size=120, color=theme.BLEU).encode(
                 x=alt.X("annonce:Q", title="Probabilité annoncée (%)"),
                 y=alt.Y("observe:Q", title="Réussite observée (%)"),
                 size=alt.Size("n:Q", legend=None),
@@ -293,7 +313,7 @@ Deux enseignements de cette mesure :
                          alt.Tooltip("observe:Q", format=".1f"),
                          alt.Tooltip("n:Q", title="n")])
             diag = alt.Chart(pd.DataFrame({"x": [33, 95]})).mark_line(
-                strokeDash=[6, 4], color="#94a3b8").encode(x="x:Q", y="x:Q")
+                strokeDash=[6, 4], color="#52525b").encode(x="x:Q", y="x:Q")
             st.altair_chart((diag + ch).properties(height=300), use_container_width=True)
             st.dataframe(
                 tbl.assign(p_moyenne=100 * tbl.p_moyenne, reussite=100 * tbl.reussite,
@@ -317,27 +337,33 @@ Deux enseignements de cette mesure :
         ORDRE = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
                  "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
                  "Rien à signaler": 4}
-        COULEUR = {"Écart soutenu": "🟢", "Écart isolé — prudence": "🟡",
-                   "Fragile — dépend de la méthode": "🟠", "Trop peu de books": "⚪",
-                   "Rien à signaler": "⚪"}
+        TON = {"Écart soutenu": "pos", "Écart isolé — prudence": "neu",
+               "Fragile — dépend de la méthode": "neg",
+               "Trop peu de books": "outline", "Rien à signaler": "outline"}
 
         def nom_book(b):
             return {"_max_marche": "⌀ meilleur du marché",
                     "_moyenne_marche": "⌀ moyenne marché"}.get(b, b)
 
+        def ton_ecart(v):
+            # Seuil de ±1 point, comme la maquette (gapClass).
+            return "pos" if v >= 1 else ("neg" if v <= -1 else "neu")
+
         rp = res.assign(_o=res.verdict.map(ORDRE).fillna(9)).sort_values(
             ["_o", "kickoff"]).reset_index(drop=True)
-        st.dataframe(pd.DataFrame({
-            "": rp.verdict.map(COULEUR), "Constat": rp.verdict,
+        theme.tableau(pd.DataFrame({
+            "Constat": [theme.badge(v, TON.get(v, "outline")) for v in rp.verdict],
             "Match": rp.home_team + " – " + rp.away_team,
             "Issue visée": rp.issue_prix.map(lib),
-            "Cote": rp.cote_prix, "Chez": rp.book_prix.map(nom_book),
-            "Écart %": rp.ecart_prix,
-            "min %": rp.ev_min, "max %": rp.ev_max,
+            "Cote": rp.cote_prix.map("{:.2f}".format),
+            "Chez": rp.book_prix.map(nom_book),
+            "Écart %": [theme.badge(f"{v:+.2f}", ton_ecart(v)) for v in rp.ecart_prix],
+            "min %": rp.ev_min.map("{:+.2f}".format),
+            "max %": rp.ev_max.map("{:+.2f}".format),
             "Books au prix": rp.soutien_prix,
-        }).style.format({"Cote": "{:.2f}", "Écart %": "{:+.2f}",
-                         "min %": "{:+.2f}", "max %": "{:+.2f}"}),
-            use_container_width=True, hide_index=True)
+        }), html=["Constat", "Écart %"],
+            aligne_droite=["Cote", "Écart %", "min %", "max %", "Books au prix"],
+            classes={"Chez": "od-muted"})
 
         st.markdown("""
 **min % / max %** encadrent l'écart selon la méthode de dévig retenue (Shin, power, odds ratio,
@@ -347,10 +373,12 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
 """)
 
     st.divider()
-    st.subheader("Détail d'un match")
+    # Titre et sélecteur sur une même ligne, comme la maquette.
+    t1, t2 = st.columns([1, 1], vertical_alignment="center")
+    t1.subheader("Détail d'un match")
     libelles = (res.kickoff.str[11:16] + " · " + res.home_team + " – " + res.away_team
                 + " (" + res.league.astype(str) + ")")
-    choix = st.selectbox("Match", libelles.tolist())
+    choix = t2.selectbox("Match", libelles.tolist(), label_visibility="collapsed")
     ligne = res.loc[libelles == choix].iloc[0]
     fk = ligne.fixture_key
 
@@ -374,6 +402,11 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
     else:
         st.markdown(f"### Pronostic : **{nom_prono}** "
                     f"({100 * ligne.p_probable:.1f} %)")
+
+    buts_ui.bloc_buts(ligne, r.get("totaux"))
+
+    paris_ui.formulaire_pari(ligne, det, methode, source=r.get("fournisseur"),
+                             totaux=r.get("totaux"))
 
     with st.expander("Dispersion des prix sur ce match"):
         e1, e2, e3 = st.columns(3)
@@ -401,33 +434,54 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
                 np.where(d.bookmaker.isin(AUTRE_INSTANT), "autre instant", "book"))
     d = d.sort_values(["type", "bookmaker"])
 
-    c1, c2 = st.columns([3, 2])
+    couleurs_books = theme.palette_books(d.bookmaker)
+
+    c1, c2 = st.columns([1.3, 1])
     with c1:
-        st.dataframe(
+        theme.tableau(
             pd.DataFrame({
-                "Bookmaker": d.bookmaker, "Type": d.type,
-                "Cote 1": d.cote_1, "Cote N": d.cote_N, "Cote 2": d.cote_2,
-                "P(1) %": 100 * d.p_1, "P(N) %": 100 * d.p_N, "P(2) %": 100 * d.p_2,
-                "Marge %": d.marge,
-            }).style.format({**{c: "{:.2f}" for c in ["Cote 1", "Cote N", "Cote 2", "Marge %"]},
-                             **{c: "{:.1f}" for c in ["P(1) %", "P(N) %", "P(2) %"]}}),
-            use_container_width=True, hide_index=True)
+                "Bookmaker": [theme.pastille(b, couleurs_books) + " " + str(b)
+                              for b in d.bookmaker],
+                "Type": d.type,
+                "Cote 1": d.cote_1.map("{:.2f}".format),
+                "Cote N": d.cote_N.map("{:.2f}".format),
+                "Cote 2": d.cote_2.map("{:.2f}".format),
+                "P(1)": (100 * d.p_1).map("{:.1f}".format),
+                "P(N)": (100 * d.p_N).map("{:.1f}".format),
+                "P(2)": (100 * d.p_2).map("{:.1f}".format),
+                "Marge %": d.marge.map("{:.2f}".format),
+            }), html=["Bookmaker"],
+            aligne_droite=["Cote 1", "Cote N", "Cote 2", "P(1)", "P(N)", "P(2)",
+                           "Marge %"],
+            classes={"Type": "od-muted"})
         st.caption("« autre instant » = même bookmaker relevé plus tôt. Exclu du consensus "
                    "et du meilleur prix : ce n'est pas un concurrent, et cette cote n'est "
                    "plus disponible.")
     with c2:
-        longd = d[d.type == "book"].melt(
+        books = d[d.type == "book"]
+        longd = books.melt(
             id_vars="bookmaker", value_vars=["p_1", "p_N", "p_2"],
             var_name="issue", value_name="p")
         longd["issue"] = longd.issue.map({"p_1": "1", "p_N": "N", "p_2": "2"})
-        ch = alt.Chart(longd).mark_circle(size=110, opacity=.85).encode(
+        noms = books.bookmaker.tolist()
+        ch = alt.Chart(longd).mark_circle(
+            size=110, opacity=.88, stroke=theme.BG, strokeWidth=1).encode(
             x=alt.X("p:Q", title="Probabilité (marge retirée)", axis=alt.Axis(format="%")),
             y=alt.Y("issue:N", title=None, sort=["1", "N", "2"]),
-            color=alt.Color("bookmaker:N", title="Bookmaker"),
+            # Une couleur fixe par bookmaker, comme la légende de la maquette.
+            color=alt.Color("bookmaker:N", title="Bookmaker", legend=None,
+                            scale=alt.Scale(domain=noms,
+                                            range=[couleurs_books[str(b)] for b in noms])),
             tooltip=["bookmaker", "issue", alt.Tooltip("p:Q", format=".1%")],
         ).properties(height=220)
         st.altair_chart(ch, use_container_width=True)
+        theme.legende_books(noms, couleurs_books)
         st.caption("Dispersion entre bookmakers. Points resserrés = marché d'accord.")
+
+
+# ==========================================================================
+elif page == "Mes paris":
+    paris_ui.page()
 
 
 # ==========================================================================
@@ -466,7 +520,7 @@ elif page == "Dévig d'un livre":
             aff.style.format({c: "{:.2f} %" for c in
                               ["Brute 1/c", "Shin", "Power", "Odds ratio", "Proportionnelle"]}
                              | {"Cote": "{:.2f}", "Cote juste (Shin)": "{:.3f}"})
-               .background_gradient(cmap="Blues", subset=["Shin"]),
+               .background_gradient(cmap=theme.GRADIENT_BLEU, subset=["Shin"]),
             use_container_width=True, hide_index=True)
         st.caption("Le tableau défile horizontalement si la fenêtre est étroite.")
 
@@ -494,7 +548,7 @@ elif page == "Dévig d'un livre":
             x=alt.X("Écart relatif (%):Q", title="Erreur relative de la proportionnelle (%)"),
             y=alt.Y("Issue:N", sort=None),
             color=alt.condition(alt.datum["Écart relatif (%)"] > 0,
-                                alt.value("#dc2626"), alt.value("#2563eb")),
+                                alt.value(theme.ROUGE), alt.value(theme.BLEU)),
             tooltip=["Issue", "Écart (points)", "Écart relatif (%)"],
         ).properties(height=40 * len(biais) + 40)
         st.altair_chart(ch, use_container_width=True)
@@ -546,15 +600,15 @@ elif page == "Calibration du marché":
         base = alt.Chart(courbe.assign(annonce=100 * courbe.annonce,
                                        observe=100 * courbe.observe))
         diag = alt.Chart(pd.DataFrame({"x": [0, 100]})).mark_line(
-            strokeDash=[6, 4], color="#94a3b8").encode(x="x:Q", y="x:Q")
-        pts = base.mark_circle(size=140, color="#2563eb").encode(
+            strokeDash=[6, 4], color="#52525b").encode(x="x:Q", y="x:Q")
+        pts = base.mark_circle(size=140, color=theme.BLEU).encode(
             x=alt.X("annonce:Q", title="Probabilité annoncée (%)", scale=alt.Scale(domain=[0, 100])),
             y=alt.Y("observe:Q", title="Fréquence observée (%)", scale=alt.Scale(domain=[0, 100])),
             size=alt.Size("n:Q", legend=None, scale=alt.Scale(range=[60, 500])),
             tooltip=[alt.Tooltip("annonce:Q", format=".1f", title="annoncé %"),
                      alt.Tooltip("observe:Q", format=".1f", title="observé %"),
                      alt.Tooltip("n:Q", title="n")])
-        ligne = base.mark_line(color="#2563eb", opacity=.5).encode(x="annonce:Q", y="observe:Q")
+        ligne = base.mark_line(color=theme.BLEU, opacity=.5).encode(x="annonce:Q", y="observe:Q")
         st.altair_chart((diag + ligne + pts).properties(height=440), use_container_width=True)
         st.caption("Les points sur la diagonale = marché parfaitement calibré. "
                    "La taille du point reflète l'effectif du bin.")
@@ -565,7 +619,8 @@ elif page == "Calibration du marché":
         aff.columns = ["annoncé %", "observé %", "n", "écart pts"]
         st.dataframe(aff.style.format({"annoncé %": "{:.1f}", "observé %": "{:.1f}",
                                        "écart pts": "{:+.2f}"})
-                        .background_gradient(cmap="RdBu", subset=["écart pts"], vmin=-5, vmax=5),
+                        .background_gradient(cmap=theme.GRADIENT_DIVERGENT,
+                                        subset=["écart pts"], vmin=-5, vmax=5),
                      use_container_width=True, hide_index=True)
 
     if code == "(tous)":
@@ -590,7 +645,7 @@ elif page == "Cartographie":
         ch = alt.Chart(m).mark_bar().encode(
             x=alt.X("marge:Q", title="Marge moyenne (%)"),
             y=alt.Y("league_code:N", sort="x", title=None),
-            color=alt.Color("marge:Q", scale=alt.Scale(scheme="yelloworangered"), legend=None),
+            color=alt.Color("marge:Q", scale=alt.Scale(range=theme.ECHELLE_SEQ_CHAUDE), legend=None),
             tooltip=["country", "league", alt.Tooltip("marge:Q", format=".2f"),
                      alt.Tooltip("n:Q", title="matchs")],
         ).properties(height=22 * len(m) + 30)
@@ -615,7 +670,7 @@ elif page == "Cartographie":
                 x=alt.X("information_tardive:Q", title="Information tardive (Δ Brier)"),
                 y=alt.Y("league_code:N", sort="-x", title=None),
                 color=alt.Color("information_tardive:Q",
-                                scale=alt.Scale(scheme="purples"), legend=None),
+                                scale=alt.Scale(range=theme.ECHELLE_SEQ_VIOLETTE), legend=None),
                 tooltip=["country", "league",
                          alt.Tooltip("information_tardive:Q", format=".5f"),
                          alt.Tooltip("n:Q", title="matchs")],
@@ -667,7 +722,8 @@ elif page == "Explorateur de matchs":
     st.dataframe(
         vue.style.format({c: "{:.1f}" for c in ["P(1) %", "P(N) %", "P(2) %"]}
                          | {c: "{:.2f}" for c in ["Cote 1", "Cote N", "Cote 2"]})
-           .background_gradient(cmap="Blues", subset=["P(1) %", "P(N) %", "P(2) %"]),
+           .background_gradient(cmap=theme.GRADIENT_BLEU,
+                               subset=["P(1) %", "P(N) %", "P(2) %"]),
         use_container_width=True, hide_index=True, height=560)
 
     y = cible(d)

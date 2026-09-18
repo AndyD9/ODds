@@ -1,0 +1,647 @@
+/* Habillage repris de la maquette « Main » (Main-html.zip).
+ *
+ * Ce qui s'exprimait dans .streamlit/config.toml y est resté : couleurs de
+ * base, rayons, familles typographiques, palettes de graphiques. Ce fichier
+ * ne contient que ce que le thème Streamlit ne sait pas dire — la géométrie
+ * des tuiles, les alertes bordées, les tableaux, les puces de filtre.
+ *
+ * Les valeurs (px, opacités, interlignes) sont celles du bloc <style> de la
+ * maquette, pas des approximations.
+ */
+
+:root {
+  --bg: #09090b;
+  --fg: #fafafa;
+  --card: #18181b;
+  --card-2: #101013;        /* tuiles imbriquées dans une carte */
+  --field: #0d0d10;         /* fond des champs de saisie */
+  --border: #27272a;
+  --border-2: #1f1f23;      /* grille interne des graphiques */
+  --muted-fg: #a1a1aa;
+  --muted-fg-2: #71717a;
+  --body-fg: #d4d4d8;
+
+  --blue: #93c5fd;
+  --blue-bg: rgba(96, 165, 250, 0.10);
+  --blue-border: rgba(96, 165, 250, 0.28);
+  --emerald: #6ee7b7;
+  --emerald-bg: rgba(52, 211, 153, 0.10);
+  --emerald-border: rgba(52, 211, 153, 0.28);
+  --amber: #fcd34d;
+  --amber-bg: rgba(251, 191, 36, 0.10);
+  --amber-border: rgba(251, 191, 36, 0.28);
+  --red: #fca5a5;
+  --red-bg: rgba(248, 113, 113, 0.09);
+  --red-border: rgba(248, 113, 113, 0.25);
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Icônes d'alerte de la maquette, reprises trait pour trait et posées en
+   * masque : la couleur vient de `background-color`, pas du SVG. */
+  --icone-info: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cline x1='12' y1='11' x2='12' y2='16'/%3E%3Ccircle cx='12' cy='7.5' r='0.6' fill='black' stroke='none'/%3E%3C/svg%3E");
+  --icone-check: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M8.5 12.5l2.2 2.2 4.8-5.4'/%3E%3C/svg%3E");
+  --icone-alerte: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 3.9a1.6 1.6 0 0 1 2.8 0l8.2 14.6a1.6 1.6 0 0 1-1.4 2.4H3.8a1.6 1.6 0 0 1-1.4-2.4z'/%3E%3Cline x1='12' y1='9.5' x2='12' y2='13.5'/%3E%3Ccircle cx='12' cy='16.6' r='0.6' fill='black' stroke='none'/%3E%3C/svg%3E");
+}
+
+/* ======================================================================
+   1. Mise en page
+   ====================================================================== */
+
+/* La maquette pose 40px de gouttière et un contenu de 1180px centré. */
+[data-testid="stMainBlockContainer"] {
+  padding: 40px 40px 100px;
+  max-width: 1260px;
+}
+
+/* Rythme vertical : 22px entre blocs de premier niveau. */
+[data-testid="stMain"] [data-testid="stVerticalBlock"] {
+  gap: 0.9rem;
+}
+[data-testid="stMain"] > div > [data-testid="stVerticalBlock"] {
+  gap: 1.375rem;
+}
+
+/* ======================================================================
+   2. Typographie
+   ====================================================================== */
+
+[data-testid="stMain"] h1 {
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  padding: 0;
+  line-height: 1.25;
+}
+[data-testid="stMain"] h2 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  padding: 10px 0 0;
+}
+[data-testid="stMain"] h3 {
+  font-size: 15.5px;
+  font-weight: 600;
+  padding: 6px 0 0;
+}
+
+/* Corps de texte : .body-sm de la maquette. */
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] li {
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--body-fg);
+}
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] strong {
+  color: #f4f4f5;
+  font-weight: 600;
+}
+
+/* Légendes : .small. */
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p {
+  font-size: 12.5px !important;
+  line-height: 1.55;
+  color: var(--muted-fg) !important;
+}
+
+/* Étiquettes de widget : .label. */
+[data-testid="stWidgetLabel"] p {
+  font-size: 12px !important;
+  font-weight: 500;
+  color: var(--muted-fg) !important;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 12px !important;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px !important;
+}
+
+hr {
+  border-color: var(--border);
+  margin: 0.5rem 0;
+}
+
+/* ======================================================================
+   3. Alertes — .alert de la maquette : bordure teintée, icône, titre gras
+   ====================================================================== */
+
+[data-testid="stAlertContainer"] {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+[data-testid="stAlertContainer"] [data-testid="stMarkdownContainer"] p {
+  font-size: 13px !important;
+  line-height: 1.55;
+  color: #c7cad1 !important;
+}
+[data-testid="stAlertContainer"] [data-testid="stMarkdownContainer"] strong {
+  color: #f4f4f5;
+  font-weight: 600;
+}
+
+/* L'icône est posée en ::before : Streamlit n'en affiche pas sans `icon=`. */
+[data-testid="stAlertContainer"]::before {
+  content: "";
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+/* Sans `icon=`, aucun glyphe natif ; s'il y en a un, on retire le nôtre. */
+[data-testid="stAlertContainer"]:has([data-testid="stIconMaterial"])::before {
+  display: none;
+}
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
+}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"])::before {
+  background-color: var(--blue);
+  -webkit-mask-image: var(--icone-info);
+  mask-image: var(--icone-info);
+}
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
+  background: var(--emerald-bg);
+  border-color: var(--emerald-border);
+}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"])::before {
+  background-color: var(--emerald);
+  -webkit-mask-image: var(--icone-check);
+  mask-image: var(--icone-check);
+}
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"])::before {
+  background-color: var(--amber);
+  -webkit-mask-image: var(--icone-alerte);
+  mask-image: var(--icone-alerte);
+}
+
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"])::before {
+  background-color: var(--red);
+  -webkit-mask-image: var(--icone-alerte);
+  mask-image: var(--icone-alerte);
+}
+
+/* ======================================================================
+   4. Indicateurs — .stat-tile
+   ====================================================================== */
+
+[data-testid="stMain"] [data-testid="stMetric"] {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 22px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: flex-start;
+}
+[data-testid="stMetricLabel"] {
+  width: 100%;
+  overflow: visible;
+}
+[data-testid="stMetricLabel"] > div,
+[data-testid="stMetricLabel"] [data-testid="stMarkdownContainer"] {
+  overflow: visible;
+  white-space: normal;
+}
+[data-testid="stMetricLabel"] p {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: var(--muted-fg) !important;
+  line-height: 1.3;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+[data-testid="stMetricValue"] {
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  line-height: 1.15;
+  /* Une valeur tronquée en « 1 001.… » ne dit plus rien. On la laisse
+   * passer à la ligne plutôt que de la couper. */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+[data-testid="stMetricValue"] > div {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+/* Les libellés et deltas passent à la ligne, mais jamais AU MILIEU d'un mot
+ * (« Drawd / own »). */
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricDelta"] {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+/* Le texte du delta vit dans un conteneur markdown imbriqué que Streamlit
+ * met en `nowrap` : sans ces règles, « initiale 1 000.00 € » s'affiche
+ * « initiale 1 » — un chiffre faux, pas seulement une coupure. */
+[data-testid="stMetricDelta"] [data-testid="stMarkdownContainer"],
+[data-testid="stMetricDelta"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stMetricValue"] [data-testid="stMarkdownContainer"],
+[data-testid="stMetricValue"] [data-testid="stMarkdownContainer"] p {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  min-width: 0;
+}
+[data-testid="stMetricDelta"] [data-testid="stMarkdownContainer"] p {
+  font-size: 12px !important;
+  line-height: 1.35;
+}
+
+/* Quatre tuiles sur une fenêtre étroite ne laissent qu'une centaine de
+ * pixels chacune : on resserre la typographie plutôt que de rogner. */
+@media (max-width: 1100px) {
+  [data-testid="stMetricValue"] { font-size: 20px; }
+  [data-testid="stMain"] [data-testid="stMetric"] { padding: 14px 16px; }
+}
+@media (max-width: 800px) {
+  [data-testid="stMetricValue"] { font-size: 17px; }
+  [data-testid="stMainBlockContainer"] { padding: 24px 16px 80px; }
+}
+[data-testid="stMetricDelta"] {
+  font-size: 12px;
+  gap: 4px;
+  /* Ces libellés portent des formules (« f_base 0.10 × confiance 0.16 ») :
+   * tronqués, ils ne disent plus rien. */
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.35;
+}
+[data-testid="stMetricDelta"] > div {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+[data-testid="stMetricDelta"] svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ======================================================================
+   5. Volets dépliants — traités comme des cartes
+   ====================================================================== */
+
+[data-testid="stExpander"] details {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+[data-testid="stExpander"] summary {
+  padding: 13px 18px;
+}
+[data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p {
+  font-size: 13px !important;
+  font-weight: 600;
+  color: #e4e4e7 !important;
+}
+[data-testid="stExpanderDetails"] {
+  padding: 0 18px 18px;
+}
+
+/* ======================================================================
+   6. Champs de saisie — .select de la maquette
+   ====================================================================== */
+
+[data-testid="stSelectbox"] div[role="group"],
+[data-testid="stMultiSelect"] div[role="group"],
+[data-testid="stDateInput"] div[data-baseweb="input"],
+[data-testid="stTextInput"] div[data-baseweb="input"],
+[data-testid="stNumberInput"] div[data-baseweb="input"],
+[data-testid="stNumberInput"] div[data-testid="stNumberInputContainer"] {
+  background: var(--field) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+[data-testid="stSelectbox"] div[role="group"] {
+  min-height: 36px;
+}
+[data-testid="stSelectbox"] input,
+[data-testid="stMultiSelect"] input,
+[data-testid="stDateInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input {
+  font-size: 13.5px;
+}
+
+/* Puces du multiselect — .chip / .chip-active. */
+[data-testid="stMultiSelectTagsContainer"] > span,
+[data-testid="stMultiSelectTagsContainer"] [role="button"] {
+  background: var(--blue-bg) !important;
+  border: 1px solid var(--blue-border) !important;
+  color: var(--blue) !important;
+  border-radius: 7px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  height: 29px;
+}
+
+/* ======================================================================
+   7. Tableaux natifs (st.dataframe)
+   ====================================================================== */
+
+[data-testid="stDataFrame"] {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* ======================================================================
+   8. Onglets
+   ====================================================================== */
+
+[data-baseweb="tab-list"] {
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+[data-baseweb="tab"] {
+  font-size: 13px !important;
+  font-weight: 500;
+  color: var(--muted-fg) !important;
+  padding: 10px 14px !important;
+}
+[data-baseweb="tab"][aria-selected="true"] {
+  color: var(--fg) !important;
+}
+
+/* ======================================================================
+   9. Barres de progression — .bar : 5px, rayon 3px
+   ====================================================================== */
+
+[data-testid="stProgressBarTrack"] {
+  background: var(--border) !important;
+  height: 5px !important;
+  border-radius: 3px;
+}
+[data-testid="stProgressBar"] > div > div > div {
+  border-radius: 3px;
+}
+
+/* ======================================================================
+   10. Barre latérale
+   ====================================================================== */
+
+[data-testid="stSidebarContent"] {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] h1 {
+  font-size: 15.5px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+  font-size: 11px !important;
+  color: var(--muted-fg-2) !important;
+}
+
+/* Le choix de page se lit comme une navigation, pas comme un formulaire. */
+[data-testid="stSidebar"] [data-testid="stRadioGroup"] {
+  gap: 1px;
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"] {
+  border-radius: 7px;
+  padding: 5px 8px;
+  transition: background 0.12s ease;
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"]:hover {
+  background: #1f1f23;
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"] p {
+  font-size: 13px !important;
+}
+
+/* Les indicateurs de la barre latérale sont plus compacts. */
+[data-testid="stSidebar"] [data-testid="stMetric"] {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+[data-testid="stSidebar"] [data-testid="stMetricValue"] {
+  font-size: 19px;
+}
+
+/* ======================================================================
+   11. Composants dessinés par app/theme.py
+   ====================================================================== */
+
+.od-carte,
+[data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.od-carte {
+  padding: 20px;
+}
+/* st.container(border=True) : la carte de la maquette, gouttière 20px. */
+[data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] > div > [data-testid="stVerticalBlock"] {
+  padding: 20px;
+  gap: 0.85rem;
+}
+
+.od-titre-section {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e4e4e7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+/* --- tableau dessiné : .table de la maquette --------------------------- */
+.od-table-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+.od-table-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+.od-table-wrap::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+}
+.od-table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.od-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+/* `border: none` d'abord : Streamlit borde les cellules de tout <table>
+ * rendu en markdown, la maquette ne trace que des filets horizontaux. */
+.od-table th,
+.od-table td {
+  border: none;
+  background: transparent;
+}
+.od-table thead th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted-fg);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.od-table tbody td {
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.od-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.od-table tbody tr {
+  transition: background 0.12s ease;
+}
+.od-table tbody tr:hover {
+  background: #1c1c20;
+}
+.od-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.od-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.od-muted {
+  color: var(--muted-fg);
+}
+.od-muted2 {
+  color: var(--muted-fg-2);
+}
+
+/* --- pastilles -------------------------------------------------------- */
+.od-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.od-badge-pos {
+  background: var(--emerald-bg);
+  border-color: var(--emerald-border);
+  color: var(--emerald);
+}
+.od-badge-neg {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red);
+}
+.od-badge-neu {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber);
+}
+.od-badge-info {
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
+  color: var(--blue);
+}
+.od-badge-outline {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted-fg);
+  font-weight: 500;
+  padding: 2px 7px;
+}
+
+/* --- barre 1 · N · 2 -------------------------------------------------- */
+.od-bar {
+  display: flex;
+  height: 5px;
+  width: 100%;
+  max-width: 120px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.od-bar-1 { background: #60a5fa; height: 100%; }
+.od-bar-N { background: #71717a; height: 100%; }
+.od-bar-2 { background: #3f3f46; height: 100%; }
+
+.od-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* --- état vide -------------------------------------------------------- */
+.od-vide {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 30px;
+  text-align: center;
+  color: var(--muted-fg);
+  font-size: 13.5px;
+}
+
+/* --- légende du nuage de points --------------------------------------- */
+.od-legende {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 15px;
+  font-size: 12px;
+  color: var(--body-fg);
+}
+.od-legende > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

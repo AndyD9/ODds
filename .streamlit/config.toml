@@ -1,0 +1,82 @@
+# Thème repris de la maquette « Main » (Main-html.zip).
+# Les valeurs exactes — couleurs, rayons, typographie — viennent de son bloc
+# <style> ; ce qui ne s'exprime pas ici est repris dans app/theme.css.
+
+[theme]
+base = "dark"
+
+# --- surfaces -------------------------------------------------------------
+backgroundColor          = "#09090b"   # --bg
+secondaryBackgroundColor = "#18181b"   # --card
+textColor                = "#fafafa"   # --fg
+borderColor              = "#27272a"   # --border
+dataframeBorderColor     = "#27272a"
+dataframeHeaderBackgroundColor = "#131316"
+showWidgetBorder         = true
+showSidebarBorder        = true
+
+# --- accents --------------------------------------------------------------
+primaryColor = "#60a5fa"
+linkColor    = "#93c5fd"               # --blue
+linkUnderline = false
+
+blueColor   = "#93c5fd"
+greenColor  = "#6ee7b7"                # --emerald
+yellowColor = "#fcd34d"                # --amber
+orangeColor = "#fcd34d"
+redColor    = "#fca5a5"
+grayColor   = "#a1a1aa"                # --muted-fg
+violetColor = "#a78bfa"
+
+# Les fonds d'alerte sont les rgba(…,0.10) de la maquette, aplatis sur --bg.
+blueBackgroundColor   = "#121923"
+greenBackgroundColor  = "#0d1d19"
+yellowBackgroundColor = "#211b0e"
+orangeBackgroundColor = "#211b0e"
+redBackgroundColor    = "#1f1214"
+grayBackgroundColor   = "#18181b"
+violetBackgroundColor = "#17141f"
+
+blueTextColor   = "#93c5fd"
+greenTextColor  = "#6ee7b7"
+yellowTextColor = "#fcd34d"
+orangeTextColor = "#fcd34d"
+redTextColor    = "#fca5a5"
+grayTextColor   = "#a1a1aa"
+violetTextColor = "#c4b5fd"
+
+codeBackgroundColor = "#000000"
+codeTextColor       = "#d4d4d8"
+
+# --- typographie ----------------------------------------------------------
+font        = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Inter, Helvetica, Arial, sans-serif"
+headingFont = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Inter, Helvetica, Arial, sans-serif"
+codeFont    = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+baseFontSize = 14
+codeFontSize = "0.75rem"
+# h1 → h6 : la maquette pose 23px pour le titre de page, 15.5px pour une
+# section, 13px pour un intertitre.
+headingFontSizes   = ["1.45rem", "1.15rem", "1.0rem", "0.93rem", "0.86rem", "0.8rem"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+metricValueFontSize   = "1.55rem"      # .stat-value = 25px
+metricValueFontWeight = 600
+
+# --- formes ---------------------------------------------------------------
+baseRadius   = "0.5rem"                # contrôles : 8px
+buttonRadius = "0.5rem"
+
+# --- graphiques -----------------------------------------------------------
+# Palette des bookmakers de la maquette (BOOK_COLORS), puis compléments.
+chartCategoricalColors = [
+  "#60a5fa", "#34d399", "#f472b6", "#f87171",
+  "#a78bfa", "#fbbf24", "#38bdf8", "#52525b",
+  "#fb923c", "#4ade80",
+]
+chartSequentialColors = [
+  "#101828", "#14263f", "#1a3557", "#204570", "#27568b",
+  "#3068a6", "#3d7cc0", "#5091d6", "#6ea9e6", "#93c5fd",
+]
+chartDivergingColors = [
+  "#fca5a5", "#e58585", "#c26a6a", "#95575b", "#63464b",
+  "#46484f", "#3f5a5e", "#3f7d75", "#4aa38e", "#6ee7b7",
+]

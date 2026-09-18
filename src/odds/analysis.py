@@ -1,13 +1,22 @@
 """Noyau d'analyse — partagé par la CLI et le tableau de bord.
 
-Périmètre assumé (research/RESULTS.md R8) : cet outil **ne produit aucun
-signal de pari**. Il a été établi qu'un modèle de comptage sur données
-publiques ne bat ni la clôture ni le prix précoce, dans aucun des 23
-championnats testés. Ce que l'outil fait, et qui reste utile :
+Périmètre, révisé le 2026-09-18 (prereg 0003 §1) : outil personnel à usage
+éducatif. Il affiche des probabilités et permet un suivi de paris **en
+papier**. Il n'affirme pas pour autant détenir un avantage, et deux
+résultats mesurés encadrent tout ce qu'il montre :
+
+- **RESULTS R8** — un modèle de comptage sur données publiques ne bat ni la
+  clôture ni le prix précoce, dans aucun des 23 championnats testés ;
+- **RESULTS R9** — sur les marchés de buts non plus, y compris là où le
+  marché ne cote rien. La meilleure information disponible reste le prix.
+
+Ce que l'outil fait donc, et qui est vérifié :
 
 - retirer correctement la marge d'un livre de cotes (ce que 1/cote ne fait
   pas, et ce que la normalisation proportionnelle fait mal) ;
-- mesurer la calibration réelle du marché ;
+- mesurer la calibration réelle du marché, et l'afficher avec son n ;
+- dériver les marchés de buts du prix, en disant quand la dérivation tient
+  et de combien elle se trompe quand elle ne tient plus ;
 - cartographier marge et information tardive par championnat.
 """
 
@@ -280,6 +289,92 @@ def _long_depuis_historique(jour: pd.Timestamp) -> pd.DataFrame:
     return pd.concat(blocs, ignore_index=True) if blocs else pd.DataFrame()
 
 
+# --------------------------------------------------------------------------
+# Marché des totaux (over/under 2,5)
+# --------------------------------------------------------------------------
+# Le seul marché de buts réellement coté qu'on puisse obtenir : les totaux
+# par équipe sont un marché additionnel réservé aux offres payantes.
+#
+# Il vaut pourtant bien plus que lui-même. Une matrice de score calée sur le
+# 1X2 SEUL sous-estime les buts de façon systématique (research/RESULTS.md
+# R9) ; contrainte en plus par ce prix, elle rejoint la calibration du
+# marché — y compris sur les totaux par équipe, que personne ne cote. Un
+# crédit dépensé ici améliore donc des marchés qu'on ne peut pas observer.
+
+# Les deux sources ne nomment pas les totaux pareil : The Odds API écrit
+# ``totals`` / ``over_2.5``, football-data ``OU25`` / ``over``.
+SELECTIONS_TOTAUX = {"over": "over", "under": "under",
+                     "over_2.5": "over", "under_2.5": "under"}
+
+
+def _consensus_totaux(long: pd.DataFrame, methode: str) -> pd.DataFrame:
+    """Probabilité dévigée de « 3 buts ou plus », médiane des books réels."""
+    if len(long) == 0:
+        return pd.DataFrame(columns=["fixture_key", "p_over25", "n_books_ou"])
+    long = long.assign(selection=long.selection.map(
+        lambda v: SELECTIONS_TOTAUX.get(v, v)))
+    long = long[long.selection.isin(("over", "under"))
+                & ~long.bookmaker.isin(HORS_CONSENSUS)]
+    if len(long) == 0:
+        return pd.DataFrame(columns=["fixture_key", "p_over25", "n_books_ou"])
+    large = long.pivot_table(index=["fixture_key", "bookmaker"],
+                             columns="selection", values="odds", aggfunc="first")
+    if not {"over", "under"} <= set(large.columns):
+        return pd.DataFrame(columns=["fixture_key", "p_over25", "n_books_ou"])
+    large = large.dropna(subset=["over", "under"])
+    large = large[(large[["over", "under"]] > 1.0).all(axis=1)]
+    if len(large) == 0:
+        return pd.DataFrame(columns=["fixture_key", "p_over25", "n_books_ou"])
+
+    p = devig_matrix(large[["over", "under"]].to_numpy(float), methode)
+    t = large.reset_index()[["fixture_key", "bookmaker"]].assign(p_over=p[:, 0])
+    return (t.groupby("fixture_key")
+             .agg(p_over25=("p_over", "median"), n_books_ou=("bookmaker", "nunique"))
+             .reset_index())
+
+
+def _totaux_depuis_collecte(jour: pd.Timestamp) -> pd.DataFrame:
+    import sqlite3
+    if not BDD_COLLECTE.exists():
+        return pd.DataFrame()
+    requete = """
+        SELECT s.fixture_key, s.bookmaker, s.selection, s.odds
+        FROM odds_snapshot s
+        JOIN (
+            SELECT fixture_key, bookmaker, selection, MAX(observed_at) AS vu
+            FROM odds_snapshot WHERE market IN ('totals', 'OU25')
+            GROUP BY fixture_key, bookmaker, selection
+        ) d
+          ON s.fixture_key = d.fixture_key AND s.bookmaker = d.bookmaker
+         AND s.selection = d.selection AND s.observed_at = d.vu
+        WHERE s.market IN ('totals', 'OU25') AND substr(s.kickoff, 1, 10) = ?
+    """
+    con = sqlite3.connect(BDD_COLLECTE)
+    try:
+        return pd.read_sql(requete, con, params=(jour.strftime("%Y-%m-%d"),))
+    finally:
+        con.close()
+
+
+def _totaux_depuis_historique(jour: pd.Timestamp) -> pd.DataFrame:
+    df = charger()
+    d = df[df.date.dt.normalize() == jour.normalize()]
+    blocs = []
+    for prefixe, book in (("psc", "pinnacle_closing"), ("avgc", "_moyenne_marche"),
+                          ("maxc", "_max_marche")):
+        cols = [f"{prefixe}_o25", f"{prefixe}_u25"]
+        if not set(cols) <= set(d.columns):
+            continue
+        ok = d[d[cols].notna().all(axis=1)]
+        if len(ok) == 0:
+            continue
+        for col, sel in zip(cols, ("over", "under")):
+            blocs.append(pd.DataFrame({
+                "fixture_key": ok.index.astype(str), "bookmaker": book,
+                "selection": sel, "odds": ok[col].astype(float)}))
+    return pd.concat(blocs, ignore_index=True) if blocs else pd.DataFrame()
+
+
 def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     """Tous les matchs d'une date, avec l'analyse calculée automatiquement.
 
@@ -297,8 +392,8 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
         long = _long_depuis_historique(jour)
         source, fournisseur = "historique", "pinnacle-closing"
     if len(long) == 0:
-        return {"source": None, "fournisseur": None,
-                "resume": pd.DataFrame(), "detail": pd.DataFrame()}
+        return {"source": None, "fournisseur": None, "resume": pd.DataFrame(),
+                "detail": pd.DataFrame(), "totaux": pd.DataFrame()}
 
     # --- dévig, un livre à la fois ----------------------------------------
     large = long.pivot_table(
@@ -308,7 +403,8 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     large = large[(large[["home", "draw", "away"]] > 1.0).all(axis=1)]
     if len(large) == 0:
         return {"source": source, "fournisseur": fournisseur,
-                "resume": pd.DataFrame(), "detail": pd.DataFrame()}
+                "resume": pd.DataFrame(), "detail": pd.DataFrame(),
+                "totaux": pd.DataFrame()}
 
     cotes = large[["home", "draw", "away"]].to_numpy(float)
     p = devig_matrix(cotes, methode)
@@ -420,6 +516,18 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     cons[["ev_min", "ev_max"]] = _ev_toutes_methodes(cons, large, dispo)
     cons["ev_robuste"] = cons.ev_min > 0
 
+    # --- marché des totaux, s'il a été collecté ----------------------------
+    totaux = (_totaux_depuis_collecte(jour) if source == "collecte"
+              else _totaux_depuis_historique(jour))
+    if len(totaux):
+        totaux = totaux.assign(
+            selection=totaux.selection.map(SELECTIONS_TOTAUX)).dropna(
+            subset=["selection"])
+    tot = _consensus_totaux(totaux, methode)
+    cons = cons.merge(tot, on="fixture_key", how="left") if len(tot) else \
+        cons.assign(p_over25=np.nan, n_books_ou=0)
+    cons["n_books_ou"] = cons.n_books_ou.fillna(0).astype(int)
+
     cons["verdict"] = [_verdict(r) for _, r in cons.iterrows()]
 
     cons = cons.sort_values("kickoff").reset_index(drop=True)
@@ -430,7 +538,7 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
         # AUTRE erreur doit remonter : un except nu masquerait un bug.
         pass
     return {"source": source, "fournisseur": fournisseur,
-            "resume": cons, "detail": detail}
+            "resume": cons, "detail": detail, "totaux": totaux}
 
 
 def _ev_toutes_methodes(cons: pd.DataFrame, large: pd.DataFrame,
@@ -557,11 +665,78 @@ def fiabilite_historique(methode: str = "shin") -> pd.DataFrame:
     return t
 
 
+# --------------------------------------------------------------------------
+# Fiabilité mesurée des marchés de buts
+# --------------------------------------------------------------------------
+# Même principe que ``fiabilite_historique``, mais par marché de buts. La
+# table est précalculée par ``research/fiabilite_buts.py`` : la dériver à la
+# volée demanderait d'ajuster 150 626 matrices de score, soit plusieurs
+# minutes à chaque ouverture de page.
+#
+# Sans elle, un pari sur un marché de buts ne transmettait aucun ``n`` au
+# moteur de mise, et « un signal absent vaut 1 » (prereg 0001 §4) le faisait
+# sortir PLUS confiant qu'un 1X2 sur le même match. Le moteur aurait misé
+# davantage là où l'on sait moins.
+
+FIABILITE_BUTS = RACINE / "research" / "data" / "fiabilite_buts.parquet"
+
+
+@lru_cache(maxsize=1)
+def fiabilite_buts() -> pd.DataFrame:
+    """Fréquence réelle par marché et par tranche. Vide si non calculée."""
+    if not FIABILITE_BUTS.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(FIABILITE_BUTS)
+
+
+def tranche_fiabilite_buts(code: str, p: float,
+                           contraint: bool = False) -> pd.Series | None:
+    """Tranche couvrant ``p`` pour ce marché, ou ``None``.
+
+    Trois retours distincts, et la distinction compte pour le moteur de
+    mise :
+
+    - une ligne          -> on a mesuré, voici le n et la réussite ;
+    - ``None`` + table vide -> on n'a rien mesuré (table non générée) ;
+    - ``None`` + table pleine -> on a mesuré et cette tranche est trop
+      mince pour dire quoi que ce soit.
+
+    Repli assumé : faute de tranche dans la variante contrainte, on lit
+    celle dérivée du 1X2 seul. Elle porte sur un échantillon plus large et
+    une calibration moins bonne — se tromper de ce côté-là est le bon sens
+    de l'erreur.
+    """
+    t = fiabilite_buts()
+    if len(t) == 0:
+        return None
+    sous = t[(t.code == code) & (t.contraint == bool(contraint))]
+    if len(sous) == 0:
+        sous = t[t.code == code]
+    if len(sous) == 0:
+        return None
+    ligne = sous[(sous.borne_inf < p) & (p <= sous.borne_sup)]
+    return ligne.iloc[0] if len(ligne) else None
+
+
 def _niveau(p: float) -> str:
     for seuil, nom in NIVEAUX:
         if p >= seuil:
             return nom
     return NIVEAUX[-1][1]
+
+
+def tranche_fiabilite(p: float, methode: str = "shin") -> pd.Series:
+    """Ligne de ``fiabilite_historique`` couvrant la probabilité ``p``.
+
+    Extraite d'``annoter_confiance`` pour servir sur une issue quelconque :
+    un pari ne porte pas nécessairement sur l'issue la plus probable, et le
+    taux de réussite observé dépend de la tranche, pas du match.
+    """
+    table = fiabilite_historique(methode)
+    ligne = table[(table.borne_inf < p) & (p <= table.borne_sup)]
+    if len(ligne) == 0:
+        ligne = table.iloc[[-1]] if p > table.borne_sup.max() else table.iloc[[0]]
+    return ligne.iloc[0]
 
 
 def annoter_confiance(res: pd.DataFrame, methode: str = "shin") -> pd.DataFrame:
@@ -576,13 +751,9 @@ def annoter_confiance(res: pd.DataFrame, methode: str = "shin") -> pd.DataFrame:
     """
     if len(res) == 0:
         return res
-    table = fiabilite_historique(methode)
     out = []
     for p in res.p_probable:
-        ligne = table[(table.borne_inf < p) & (p <= table.borne_sup)]
-        if len(ligne) == 0:
-            ligne = table.iloc[[-1]] if p > table.borne_sup.max() else table.iloc[[0]]
-        r = ligne.iloc[0]
+        r = tranche_fiabilite(float(p), methode)
         out.append({
             "confiance": _niveau(float(p)),
             "reussite_hist": float(r.reussite),
