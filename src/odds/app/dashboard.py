@@ -9,22 +9,16 @@ disponible ; l'outil sert à le lire correctement, pas à prétendre le battre.
 
 from __future__ import annotations
 
-import sys
+from html import escape
 from pathlib import Path
 
-RACINE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(RACINE / "src"))
 
 import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import buts_ui  # noqa: E402  — marchés de buts
-import paris_ui  # noqa: E402  — carnet papier
-import theme  # noqa: E402  — habillage, doit suivre l'ajout du chemin
-
+from odds.app import buts_ui, couverture_ui, paris_ui, theme
 from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
                            SEUIL_PRIME_ISOLEE, analyser_livre, avec_cloture,
                            carte_information_tardive, carte_marges, charger, cible,
@@ -163,7 +157,7 @@ if page == "Matchs par date":
     with st.spinner("Calcul…"):
         r = matchs_a_la_date(jour, methode)
 
-    if r["source"] is None:
+    if r.vide:
         st.info(f"**Aucun match au {jour}.**")
         if jour >= aujourdhui and len(fx):
             st.markdown(
@@ -180,8 +174,8 @@ if page == "Matchs par date":
                         "n'ait été joué ce jour-là dans les 35 championnats suivis.")
         st.stop()
 
-    res_tout, det = r["resume"], r["detail"]
-    historique = r["source"] == "historique"
+    res_tout, det = r.resume, r.detail
+    historique = r.source == "historique"
 
     # --- filtre championnat ------------------------------------------------
     ligues = sorted(res_tout.league.astype(str).unique())
@@ -195,7 +189,7 @@ if page == "Matchs par date":
         st.info(f"**Source : historique** — {len(res)} matchs affichés "
                 f"sur {len(res_tout)} ce jour-là. Cotes de clôture Pinnacle, résultat connu.")
     else:
-        fournisseur = r.get("fournisseur") or "football-data"
+        fournisseur = r.fournisseur or "football-data"
         nom = {"odds-api": "The Odds API", "football-data": "football-data.co.uk"}.get(
             fournisseur, fournisseur)
         st.success(f"**Source : collecte propre — {nom}** — {len(res)} matchs affichés "
@@ -403,10 +397,13 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
         st.markdown(f"### Pronostic : **{nom_prono}** "
                     f"({100 * ligne.p_probable:.1f} %)")
 
-    buts_ui.bloc_buts(ligne, r.get("totaux"))
+    buts_ui.bloc_buts(ligne, r.totaux)
 
-    paris_ui.formulaire_pari(ligne, det, methode, source=r.get("fournisseur"),
-                             totaux=r.get("totaux"))
+    paris_ui.formulaire_pari(ligne, det, methode, source=r.fournisseur,
+                             totaux=r.totaux)
+
+    couverture_ui.bloc_couverture(ligne, det, methode, source=r.fournisseur,
+                                  totaux=r.totaux)
 
     with st.expander("Dispersion des prix sur ce match"):
         e1, e2, e3 = st.columns(3)
@@ -440,7 +437,9 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
     with c1:
         theme.tableau(
             pd.DataFrame({
-                "Bookmaker": [theme.pastille(b, couleurs_books) + " " + str(b)
+                # Colonne rendue en HTML : le nom vient de l'API et doit
+                # être échappé comme toute autre chaîne externe.
+                "Bookmaker": [theme.pastille(b, couleurs_books) + " " + escape(str(b))
                               for b in d.bookmaker],
                 "Type": d.type,
                 "Cote 1": d.cote_1.map("{:.2f}".format),

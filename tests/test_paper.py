@@ -405,20 +405,18 @@ def test_libelle_nomme_les_equipes():
     assert paper.libelle("dom_over_1.5", "Lens", "Reims") == "Lens marque 2 buts ou plus"
 
 
-def test_clv_sur_un_total_accepte_les_deux_nommages(carnet, tmp_path):
-    """The Odds API écrit `totals/over_2.5`, football-data `OU25/over`.
-
-    Lire un seul des deux priverait de CLV la moitié des paris sur les buts.
-    """
-    for marche_, selection in (("totals", "over_2.5"), ("OU25", "over")):
-        bdd = _base_collecte(tmp_path / f"{marche_}.db", [
-            ("oa:abc", "2026-09-10 18:00", "betfair_ex_eu", marche_, selection,
-             1.90, "2026-09-10 17:00"),
-        ])
-        c = tmp_path / f"carnet_{marche_}.db"
-        _pari(c, issue="total_over_2.5", cote=2.0, kickoff="2026-09-10 18:00")
-        assert paper.capturer_clotures(chemin=c, bdd=bdd) == 1
-        assert paper.paris(c).cote_cloture.iloc[0] == pytest.approx(1.90)
+def test_clv_sur_un_total_lit_le_vocabulaire_unique(carnet, tmp_path):
+    """La collecte range les totaux sous `totals/over_2.5`, quelle que soit la
+    source : le carnet n'a qu'une graphie à connaître."""
+    assert paper.selections_collectees("total_over_2.5") == (("totals", "over_2.5"),)
+    assert paper.selections_collectees("total_under_3.5") == (("totals", "under_3.5"),)
+    bdd = _base_collecte(tmp_path / "odds.db", [
+        ("oa:abc", "2026-09-10 18:00", "betfair_ex_eu", "totals", "over_2.5",
+         1.90, "2026-09-10 17:00"),
+    ])
+    _pari(carnet, issue="total_over_2.5", cote=2.0, kickoff="2026-09-10 18:00")
+    assert paper.capturer_clotures(chemin=carnet, bdd=bdd) == 1
+    assert paper.paris(carnet).cote_cloture.iloc[0] == pytest.approx(1.90)
 
 
 def test_pas_de_clv_sur_un_total_par_equipe(carnet, tmp_path):
@@ -493,3 +491,41 @@ def test_une_probabilite_derivee_reduit_la_mise():
     faible = paper.proposer_mise(**commun, p_cotee=False)
     assert faible["mise"] < forte["mise"]
     assert faible["f_effectif"] == pytest.approx(forte["f_effectif"] / 2)
+
+
+def test_l_intervalle_du_roi_suit_le_ratio_et_non_la_moyenne_des_rendements(carnet):
+    """Deux paris réglés à l'identique (même cote, même verdict) : le ROI est
+    exact et l'intervalle nul, quelle que soit la mise. Un intervalle fondé sur
+    la moyenne des rendements le dirait aussi ; la différence apparaît dès
+    que les mises diffèrent et les verdicts aussi."""
+    _pari(carnet, issue="1", cote=2.0, mise=10)
+    _pari(carnet, issue="2", cote=2.0, mise=90)
+    paper.regler_match("oa:abc", 1, 0, chemin=carnet)      # 1 gagne, 2 perd
+    b = paper.bilan(paper.paris(carnet))
+    assert b["mises"] == pytest.approx(100.0)
+    assert b["profit"] == pytest.approx(10 - 90)
+    assert b["roi"] == pytest.approx(-0.8)
+    # Résidus e = profit − ROI × mise : (10 + 8, −90 + 72) = (18, −18).
+    # Var(e, ddof=1) = 648 ; IC = 1,96 × √(2 × 648) / 100.
+    assert b["roi_ic95"] == pytest.approx(1.96 * (2 * 648) ** 0.5 / 100)
+
+
+def test_la_migration_ne_rejoue_pas(tmp_path):
+    chemin = tmp_path / "vieux.db"
+    con = sqlite3.connect(chemin)
+    con.executescript(paper.SCHEMA)
+    con.execute("INSERT INTO pari (place_a, fixture_key, kickoff, home_team, "
+                "away_team, issue, cote, p_modele, mise, resultat) "
+                "VALUES ('2026-01-01 00:00:00', 'k', '2026-01-01 20:00', 'A', "
+                "'B', '1', 2.0, 0.5, 10, '1')")
+    con.commit(); con.close()
+
+    d = paper.paris(chemin)
+    assert d.resultat.iloc[0] == "gagne"
+    con = sqlite3.connect(chemin)
+    assert con.execute("SELECT valeur FROM reglage WHERE cle = 'schema_version'"
+                       ).fetchone()[0] == paper.SCHEMA_VERSION
+    # Un verdict inscrit APRÈS la migration au format ancien n'est plus
+    # réinterprété : la conversion a eu lieu une fois, et une seule.
+    con.execute("UPDATE pari SET resultat = 'N'"); con.commit(); con.close()
+    assert paper.paris(chemin).resultat.iloc[0] == "N"

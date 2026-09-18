@@ -47,9 +47,10 @@ def test_normalisation_format_long():
     assert set(d.home_team) == {"Arsenal", "Chelsea"}
     assert set(d.away_team) == {"Liverpool", "Everton"}
     # 1X2 et Over/Under sont tous deux captés
-    assert set(d.market) == {"1X2", "OU25"}
+    # Même vocabulaire que The Odds API : la ligne fait partie de la sélection.
+    assert set(d.market) == {"1X2", "totals"}
     assert set(d[d.market == "1X2"].selection) == {"home", "draw", "away"}
-    assert set(d[d.market == "OU25"].selection) == {"over", "under"}
+    assert set(d[d.market == "totals"].selection) == {"over_2.5", "under_2.5"}
     # Betfair Exchange, le benchmark retenu en avant, est bien présent
     assert "betfair_exchange" in set(d.bookmaker)
 
@@ -238,3 +239,20 @@ def test_flux_perime_detecte(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "FLUX", {"main": "x"})
     mod.collecter(bdd, verbose=False)
     assert bool(mod.etat_flux(bdd).iloc[0].perime) is True
+
+
+def test_les_anciens_totaux_OU25_sont_convertis_a_l_ouverture(tmp_path):
+    """Les bases constituées avant le vocabulaire unique portent `OU25/over`.
+    La conversion se fait à la connexion, sans rien perdre."""
+    import sqlite3
+    p = tmp_path / "c.db"
+    con = _connexion(p)
+    con.execute("INSERT INTO odds_snapshot (fixture_key, source, kickoff, home_team, "
+                "away_team, bookmaker, market, selection, odds, observed_at, run_id) "
+                "VALUES ('k', 'football-data', '2026-10-01 20:00', 'A', 'B', "
+                "'bet365', 'OU25', 'over', 1.9, '2026-09-30 10:00', 'r1')")
+    con.commit(); con.close()
+    con = _connexion(p)
+    assert con.execute("SELECT market, selection FROM odds_snapshot").fetchall() == \
+        [("totals", "over_2.5")]
+    con.close()

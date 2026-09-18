@@ -1,6 +1,7 @@
 """Interface en ligne de commande.
 
     uv run odds devig 1.80 3.60 4.80
+    uv run odds couvrir 1.90 3.76 2.90
     uv run odds ingest
     uv run odds carte
     uv run odds calibration --championnat E0
@@ -17,7 +18,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-RACINE = Path(__file__).resolve().parents[2]
+from odds import chemins
+
+RACINE = chemins.RACINE
 
 
 def _fmt(df: pd.DataFrame, **kw) -> str:
@@ -69,10 +72,98 @@ def cmd_devig(args) -> int:
     return 0
 
 
+def cmd_couvrir(args) -> int:
+    """``odds couvrir 1.90 3.76 2.90`` — toutes les couvertures d'un marché."""
+    from odds.market import couverture as cv
+    from odds.market.devig import devig
+
+    cotes = args.cotes
+    if len(cotes) < 2:
+        print("Il faut au moins 2 cotes : les issues exclusives d'un même marché.",
+              file=sys.stderr)
+        return 1
+    if any(c <= 1.0 for c in cotes):
+        print("Toute cote doit être > 1.0", file=sys.stderr)
+        return 1
+    libelles = args.libelles or (
+        ["Domicile", "Nul", "Extérieur"] if len(cotes) == 3
+        else [f"Issue {i + 1}" for i in range(len(cotes))])
+    if len(libelles) != len(cotes):
+        print("Autant de libellés que de cotes.", file=sys.stderr)
+        return 1
+
+    # Sans probabilités fournies, celles du livre lui-même, dévigées : toute
+    # couverture a alors une espérance négative, et c'est exactement ce que
+    # la sortie doit montrer — répartir ne crée rien.
+    if args.probas:
+        if len(args.probas) != len(cotes) or abs(sum(args.probas) - 1.0) > 0.02:
+            print("Les probabilités doivent être aussi nombreuses que les cotes "
+                  "et sommer à 1.", file=sys.stderr)
+            return 1
+        probas, origine = list(args.probas), "fournies"
+    else:
+        probas, origine = list(devig(cotes, "shin")), "livre dévigé (Shin)"
+
+    partition = tuple(libelles)
+    P = dict(zip(partition, probas))
+    C = dict(zip(partition, cotes))
+    booksum = sum(1.0 / c for c in cotes)
+
+    print(f"\nMarché : {len(cotes)} issues   Σ 1/cote = {booksum:.4f}   "
+          f"probabilités : {origine}")
+    for lib, p_, c in zip(partition, probas, cotes):
+        print(f"  {lib:<14} cote {c:>6.2f}   p {100 * p_:5.1f} %   "
+              f"p × cote {p_ * c:.3f}")
+
+    if booksum < 1.0:
+        print(f"\n  Σ 1/cote < 1 : couvrir TOUT garantit {100 * (1 / booksum - 1):+.2f} % "
+              "de la mise, quelle que soit l'issue (sur-arbitrage — vérifiez que "
+              "les prix sont encore affichés).")
+    else:
+        print(f"\n  Couvrir TOUT garantit une perte de {100 * (1 - 1 / booksum):.2f} % "
+              "de la mise : c'est la marge, payée d'avance.")
+
+    mise = float(args.mise)
+    print(f"\nToutes les couvertures à retour égal, pour {mise:.2f} :")
+    lignes = []
+    for cvr in cv.toutes_les_couvertures(C, P, mise, partition):
+        lignes.append({
+            "issues couvertes": " + ".join(cvr.codes),
+            "répartition": " / ".join(f"{cvr.mises[c]:.2f}" for c in cvr.codes),
+            "si couvert": cvr.meilleur if cvr.retour_egal else float("nan"),
+            "sinon": -cvr.total if not cvr.complete else cvr.pire,
+            "P(couvert) %": 100 * cvr.p_couverte,
+            "espérance": cvr.esperance,
+            "cote synth.": cvr.cote_synthetique,
+        })
+    t = pd.DataFrame(lignes)
+    print(t.to_string(index=False, float_format=lambda v: f"{v:+.2f}"
+                      if abs(v) < 1e6 else "—"))
+
+    f = cv.kelly_simultane(P, C, partition)
+    retenues = {k: v for k, v in f.items() if v > 0}
+    print("\nKelly simultané (fractions de bankroll, avant f_base et plafonds) :")
+    if not retenues:
+        print("  aucune issue ne bat sa réserve : à ces probabilités, ne rien miser.")
+    else:
+        for k, v in retenues.items():
+            print(f"  {k:<14} {100 * v:5.2f} %   (p × cote {P[k] * C[k]:.3f})")
+        print(f"  total          {100 * sum(retenues.values()):5.2f} %")
+        sans_valeur = [k for k in retenues if P[k] * C[k] < 1.0]
+        if sans_valeur:
+            print(f"  NB : {', '.join(sans_valeur)} a une espérance négative seule ; "
+                  "Kelly la couvre quand même, parce que la position sur les "
+                  "autres issues est grosse — ce n'est pas de la valeur, c'est "
+                  "de la variance rachetée.")
+    print("\nRappel : aucune répartition ne crée d'espérance. La somme des espérances "
+          "des jambes est celle de la couverture.")
+    return 0
+
+
 def cmd_ingest(args) -> int:
     from odds.data.footballdata import load_all
     df = load_all(verbose=not args.silencieux)
-    out = RACINE / "research" / "data" / "matches.parquet"
+    out = chemins.PARQUET
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
     print(f"\n{len(df):,} matchs -> {out}")
@@ -255,7 +346,7 @@ def cmd_credits(args) -> int:
 
 
 def cmd_app(args) -> int:
-    app = RACINE / "app" / "dashboard.py"
+    app = chemins.RACINE / "src" / "odds" / "app" / "dashboard.py"
     print(f"Lancement du tableau de bord : {app}")
     return subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
                             "--server.port", str(args.port), "--server.headless", "true"])
@@ -273,6 +364,15 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("cotes", type=float, nargs="+", help="cotes décimales, ex : 1.80 3.60 4.80")
     d.add_argument("--libelles", nargs="+", default=None, help="noms des issues")
     d.set_defaults(func=cmd_devig)
+
+    cvp = sub.add_parser("couvrir", help="répartir une mise sur plusieurs issues d'un marché")
+    cvp.add_argument("cotes", type=float, nargs="+",
+                     help="cotes des issues exclusives, ex : 1.90 3.76 2.90")
+    cvp.add_argument("--probas", type=float, nargs="+", default=None,
+                     help="vos probabilités, sommant à 1 (défaut : le livre dévigé)")
+    cvp.add_argument("--libelles", nargs="+", default=None, help="noms des issues")
+    cvp.add_argument("--mise", type=float, default=100.0, help="mise totale à répartir")
+    cvp.set_defaults(func=cmd_couvrir)
 
     i = sub.add_parser("ingest", help="télécharger et normaliser les données")
     i.add_argument("--silencieux", action="store_true")

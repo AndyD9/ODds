@@ -81,6 +81,11 @@ MAX_BUTS = 12
 # plus — c'est ce qui justifie d'en collecter une.
 RHO_DEFAUT = -0.09
 
+# Amplitude admise pour rho, qu'il soit fourni ou ajusté. Au-delà, la
+# correction de Dixon-Coles cesse de décrire une dépendance des scores
+# faibles et la matrice peut porter des cases négatives.
+RHO_BORNE = 0.2
+
 # ---------------------------------------------------------------------------
 # Jusqu'où la dérivation tient — MESURÉ (research/RESULTS.md R9)
 # ---------------------------------------------------------------------------
@@ -216,6 +221,17 @@ MARCHES: dict[str, Marche] = _catalogue()
 FAMILLES = ("1X2", "total", "total_dom", "total_ext", "btts")
 
 
+def signature_catalogue() -> str:
+    """Empreinte courte des codes du catalogue.
+
+    Sert à dater les tables précalculées (``research/fiabilite_buts.py``) :
+    une table qui ne connaît pas un marché, ou en connaît un de trop, n'est
+    pas celle de la version courante.
+    """
+    import hashlib
+    return hashlib.sha1(",".join(sorted(MARCHES)).encode()).hexdigest()[:10]
+
+
 def marche(code: str) -> Marche:
     try:
         return MARCHES[code]
@@ -327,13 +343,17 @@ def matrice_implicite(p_dom: float, p_nul: float, p_ext: float,
     p = p / somme
     if p_over is not None and not 0.0 < p_over < 1.0:
         raise ValueError(f"p_over hors ]0, 1[ : {p_over!r}")
+    if not abs(rho) <= RHO_BORNE:
+        raise ValueError(
+            f"rho hors [-{RHO_BORNE}, {RHO_BORNE}] : {rho!r}. Une telle "
+            "valeur ne décrit plus une dépendance des scores faibles.")
 
     ajuste_rho = p_over is not None
     contraintes = ("1X2",) + (("over/under",) if ajuste_rho else ())
 
     def matrice_de(theta):
         lam, mu = np.exp(theta[0]), np.exp(theta[1])
-        r = float(np.clip(theta[2], -0.2, 0.2)) if ajuste_rho else rho
+        r = float(theta[2]) if ajuste_rho else rho
         return score_matrix(lam, mu, r, max_buts), lam, mu, r
 
     x, y = _grille(max_buts)
@@ -353,7 +373,7 @@ def matrice_implicite(p_dom: float, p_nul: float, p_ext: float,
     bornes = ([np.log(0.02)] * 2, [np.log(9.0)] * 2)
     if ajuste_rho:
         theta0.append(rho)
-        bornes = (bornes[0] + [-0.2], bornes[1] + [0.2])
+        bornes = (bornes[0] + [-RHO_BORNE], bornes[1] + [RHO_BORNE])
 
     sol = least_squares(residus, theta0, bounds=bornes, xtol=1e-12, ftol=1e-12)
     m, lam, mu, r = matrice_de(sol.x)

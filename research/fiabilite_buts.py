@@ -16,7 +16,8 @@ valent pas la même chose (RESULTS R9) :
   contraint = False   probabilité dérivée du 1X2 seul, sur tout l'historique
   contraint = True    matrice calée en plus sur la cote over/under 2,5
 
-Sortie : ``research/data/fiabilite_buts.parquet``, lu par l'application.
+Sortie : ``research/data/fiabilite_buts.parquet``, lu par l'application —
+qui vérifie que rho et le catalogue sont ceux de la version courante.
 
     uv run python research/fiabilite_buts.py
 """
@@ -28,10 +29,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from odds import chemins
+from odds.analysis.fiabilite import metadonnees_fiabilite
 from odds.market.devig import devig_matrix
 from odds.models.football.buts import MARCHES, matrice_implicite, probabilite
 
-SORTIE = Path("research/data/fiabilite_buts.parquet")
+SORTIE = chemins.FIABILITE_BUTS
 
 # Bornes : plus fines au centre, où se trouvent la plupart des marchés de
 # buts, et assez larges aux extrêmes pour garder un n exploitable.
@@ -54,7 +60,7 @@ def table(p: np.ndarray, y: np.ndarray) -> pd.DataFrame:
 
 
 def main() -> int:
-    df = pd.read_parquet("research/data/matches.parquet")
+    df = pd.read_parquet(chemins.PARQUET)
     clo = df[df.odds_source == "pinnacle_closing"].reset_index(drop=True)
     p1x2 = devig_matrix(clo[["psc_h", "psc_d", "psc_a"]].to_numpy(float), "shin")
 
@@ -96,7 +102,12 @@ def main() -> int:
             lignes.append(t.assign(code=c, contraint=contraint))
 
     out = pd.concat(lignes, ignore_index=True)
-    out.to_parquet(SORTIE, index=False)
+    # La table est datée par le rho et le catalogue qui l'ont produite :
+    # l'application refuse de la lire si l'un des deux a changé depuis.
+    table_ = pa.Table.from_pandas(out, preserve_index=False)
+    table_ = table_.replace_schema_metadata(
+        {**(table_.schema.metadata or {}), **metadonnees_fiabilite()})
+    pq.write_table(table_, SORTIE)
     print(f"\n{len(out)} tranches -> {SORTIE}")
     print(out.groupby("contraint").agg(
         marches=("code", "nunique"), tranches=("code", "size"),

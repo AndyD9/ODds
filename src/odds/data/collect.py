@@ -32,8 +32,10 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-RACINE = Path(__file__).resolve().parents[3]
-BASE_DONNEES = RACINE / "research" / "data" / "odds_history.db"
+from odds import chemins, temps
+from odds.market.vocabulaire import MARCHE_1X2, MARCHE_TOTAUX, selection_totaux
+
+BASE_DONNEES = chemins.BDD_COLLECTE
 
 FLUX = {
     "main": "https://www.football-data.co.uk/fixtures.csv",
@@ -115,11 +117,15 @@ def _migrer(con: sqlite3.Connection) -> None:
         for nom, typ in colonnes.items():
             if nom not in existantes:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {nom} {typ}")
+    # Les totaux de football-data étaient rangés sous `OU25/over` ; ils
+    # rejoignent le vocabulaire unique de la collecte (market/vocabulaire.py).
+    con.execute("UPDATE odds_snapshot SET market = ?, selection = selection || '_2.5' "
+                "WHERE market = 'OU25'", (MARCHE_TOTAUX,))
     con.commit()
 
 
 def _connexion(chemin: Path | None = None) -> sqlite3.Connection:
-    p = chemin or BASE_DONNEES
+    p = chemin or chemins.rapatrier(BASE_DONNEES)
     p.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(p)
     con.executescript(SCHEMA)
@@ -174,12 +180,13 @@ def _normaliser(d: pd.DataFrame, flux: str) -> pd.DataFrame:
     d["kickoff"] = pd.to_datetime(
         d["Date"].astype(str) + " " + heure.astype(str),
         dayfirst=True, errors="coerce"
-    ).dt.strftime("%Y-%m-%d %H:%M")
+    ).dt.strftime(temps.FORMAT_MINUTE)
 
     lignes = []
     marches = {
-        "1X2": [("H", "home"), ("D", "draw"), ("A", "away")],
-        "OU25": [(">2.5", "over"), ("<2.5", "under")],
+        MARCHE_1X2: [("H", "home"), ("D", "draw"), ("A", "away")],
+        MARCHE_TOTAUX: [(">2.5", selection_totaux(2.5, "over")),
+                        ("<2.5", selection_totaux(2.5, "under"))],
     }
     for prefixe, book in BOOKMAKERS.items():
         for marche, issues in marches.items():
@@ -220,7 +227,7 @@ COLONNES_SNAPSHOT = ["fixture_key", "source", "country", "league", "kickoff",
 
 def credits_utilises_aujourdhui(con: sqlite3.Connection) -> int:
     """Crédits The Odds API déjà consommés depuis minuit UTC."""
-    jour = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    jour = temps.jour()
     r = con.execute(
         "SELECT COALESCE(SUM(credits_utilises), 0) FROM collecte_run "
         "WHERE substr(demarre_a, 1, 10) = ?", (jour,)).fetchone()
@@ -301,9 +308,13 @@ def planifier(plan: pd.DataFrame, dispo: int, cout_unitaire: int,
         return pd.DataFrame(columns=COLONNES_PLAN)
 
     # Le budget se remet à zéro à minuit UTC (`credits_utilises_aujourdhui`).
-    # La réserve ne protège donc que les coups d'envoi de la journée en
-    # cours : ceux de demain seront payés sur le budget de demain.
-    fin_de_journee = maintenant.normalize() + pd.Timedelta(days=1)
+    # La réserve protège les passes de clôture qui se paieront sur le budget
+    # d'AUJOURD'HUI : celles des coups d'envoi du jour, mais aussi celles des
+    # coups d'envoi de la nuit qui suit — un match à 00 h 30 se relève à
+    # 22 h 30, avant la remise à zéro. Les autres attendront demain.
+    h_cloture, nom_cloture = FENETRES[0][1], FENETRES[0][0]
+    horizon_reserve = (maintenant.normalize() + pd.Timedelta(days=1)
+                       + pd.Timedelta(hours=h_cloture))
 
     lignes = []
     for r in plan.itertuples():
@@ -342,13 +353,12 @@ def planifier(plan: pd.DataFrame, dispo: int, cout_unitaire: int,
     d = d.sort_values(["_p", "heures"]).reset_index(drop=True)
 
     # --- réserve ----------------------------------------------------------
-    # Tout championnat qui joue plus tard AUJOURD'HUI aura besoin d'une passe
-    # de clôture. On met son coût de côté avant de servir les fenêtres
+    # Tout championnat dont la passe de clôture tombe encore sur le budget du
+    # jour en a besoin. On met son coût de côté avant de servir les fenêtres
     # lointaines, y compris pour ceux qu'une cadence bloque à cet instant :
     # ils redeviendront éligibles avant leur coup d'envoi.
-    h_cloture, nom_cloture = FENETRES[0][1], FENETRES[0][0]
-    a_venir = d[(d.heures > h_cloture) & d._prochain.notna()
-                & (d._prochain <= fin_de_journee)]
+    a_venir = d[(d.heures > h_cloture) & d["_prochain"].notna()
+                & (d["_prochain"] <= horizon_reserve)]
     reserve = len(a_venir) * cout_unitaire
 
     libre = float(dispo)
@@ -473,8 +483,8 @@ def _derniere_cote(con: sqlite3.Connection) -> dict:
 
 def collecter(chemin_bdd: Path | None = None, verbose: bool = True) -> dict:
     """Une passe de collecte. Idempotente : ne réécrit pas une cote inchangée."""
-    maintenant = datetime.now(timezone.utc)
-    observed_at = maintenant.strftime("%Y-%m-%d %H:%M:%S")
+    maintenant = temps.maintenant()
+    observed_at = temps.seconde(maintenant)
     # Résolution à la microseconde : deux passes dans la même seconde
     # (relance manuelle, agent qui se déclenche deux fois) violaient sinon la
     # clé primaire de collecte_run et faisaient échouer la collecte.

@@ -146,3 +146,24 @@ def test_un_favori_ecrasant_implique_un_total_invraisemblable():
     assert ecrase.buts_attendus > 4.5
     assert 2.0 < equilibre.buts_attendus < 3.5
     assert buts_module.fiabilite_derivee(0.935)[1] == "dégradé"
+
+
+def test_une_cote_de_totaux_incompatible_rend_la_matrice_non_fiable():
+    """Un 1X2 équilibré et « 99 % de 3 buts ou plus » ne peuvent pas venir
+    de la même distribution de Poisson. L'ajustement doit le DIRE, pas
+    rendre une matrice qui reproduit l'un en sacrifiant l'autre."""
+    i = matrice_implicite(0.45, 0.28, 0.27, p_over=0.99)
+    assert not i.fiable
+    assert i.ecart_max > 0.01
+    assert i.contraintes == ("1X2", "over/under")
+    # Sans la contrainte fautive, le même 1X2 s'ajuste très bien : c'est le
+    # repli que l'interface utilise.
+    assert matrice_implicite(0.45, 0.28, 0.27).fiable
+
+
+def test_rho_hors_bornes_est_refuse_clairement():
+    with pytest.raises(ValueError, match="rho"):
+        matrice_implicite(0.4, 0.3, 0.3, rho=0.3)
+    with pytest.raises(ValueError, match="rho"):
+        matrice_implicite(0.4, 0.3, 0.3, p_over=0.5, rho=-0.5)
+    assert matrice_implicite(0.4, 0.3, 0.3, rho=buts_module.RHO_BORNE).fiable

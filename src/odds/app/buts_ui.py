@@ -23,8 +23,9 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-import theme
 from odds.analysis import fiabilite_buts, tranche_fiabilite_buts
+from odds.app import theme
+from odds.market.vocabulaire import selection_totaux
 from odds.models.football import buts
 
 # Familles affichées, dans l'ordre de lecture.
@@ -36,17 +37,27 @@ FAMILLES = [
 ]
 
 
-def matrice_du_match(ligne) -> tuple[buts.Implicite, bool]:
-    """Matrice de score du match, et si elle est calée sur un prix de totaux.
+def matrice_du_match(ligne) -> tuple[buts.Implicite, bool, float | None]:
+    """Matrice de score du match, calée ou non sur un prix de totaux.
 
-    Le second élément n'est pas cosmétique : il commande tout l'affichage.
+    Renvoie ``(matrice, contraint, prix_ecarte)``. ``contraint`` n'est pas
+    cosmétique : il commande tout l'affichage et la pénalité de confiance.
+
+    Quand une cote over/under existe mais qu'aucune matrice de Poisson ne
+    peut la reproduire EN MÊME TEMPS que le 1X2 — un seul bookmaker, un prix
+    aberrant ou périmé —, on ne jette pas tout : on retombe sur la
+    dérivation du 1X2 seul, et ``prix_ecarte`` porte la probabilité qu'on a
+    dû écarter, pour le dire à l'écran.
     """
     p_over = getattr(ligne, "p_over25", None)
     contraint = p_over is not None and pd.notna(p_over) and 0.0 < float(p_over) < 1.0
-    imp = buts.matrice_implicite(
-        float(ligne.p_1), float(ligne.p_N), float(ligne.p_2),
-        p_over=float(p_over) if contraint else None)
-    return imp, contraint
+    p1, pn, p2 = float(ligne.p_1), float(ligne.p_N), float(ligne.p_2)
+    imp = buts.matrice_implicite(p1, pn, p2, p_over=float(p_over) if contraint else None)
+    if contraint and not imp.fiable:
+        repli = buts.matrice_implicite(p1, pn, p2)
+        if repli.fiable:
+            return repli, False, float(p_over)
+    return imp, contraint, None
 
 
 def _meilleur_prix(totaux: pd.DataFrame, fixture_key: str) -> dict:
@@ -57,7 +68,7 @@ def _meilleur_prix(totaux: pd.DataFrame, fixture_key: str) -> dict:
                & ~totaux.bookmaker.astype(str).str.startswith("_")]
     out = {}
     for sens in ("over", "under"):
-        g = d[d.selection == sens]
+        g = d[d.selection == selection_totaux(2.5, sens)]
         if len(g):
             i = g.odds.idxmax()
             out[sens] = (float(g.loc[i, "odds"]), str(g.loc[i, "bookmaker"]))
@@ -65,14 +76,25 @@ def _meilleur_prix(totaux: pd.DataFrame, fixture_key: str) -> dict:
 
 
 def bandeau_source(imp: buts.Implicite, contraint: bool, n_books_ou: int = 0,
-                   p_max: float | None = None) -> None:
+                   p_max: float | None = None,
+                   prix_ecarte: float | None = None) -> None:
     if not imp.fiable:
+        quoi = ("les probabilités 1X2 et la cote over/under de ce match "
+                "simultanément" if "over/under" in imp.contraintes
+                else "les probabilités 1X2 de ce match")
         st.error(
-            "La matrice de score ne reproduit pas les probabilités 1X2 de ce "
-            f"match (écart {100 * imp.ecart_max:.2f} pts). La famille de "
-            "Poisson ne sait pas représenter cette configuration : **rien de "
-            "ce qui suit n'est exploitable.**")
+            f"La matrice de score ne reproduit pas {quoi} (écart "
+            f"{100 * imp.ecart_max:.2f} pts). La famille de Poisson ne sait "
+            "pas représenter cette configuration : **rien de ce qui suit "
+            "n'est exploitable.**")
         return
+    if prix_ecarte is not None:
+        st.warning(
+            f"Une cote over/under 2,5 a été relevée ({100 * prix_ecarte:.1f} % "
+            f"pour « 3 buts ou plus », {n_books_ou} bookmaker(s)), mais aucune "
+            "matrice de Poisson ne la reproduit en même temps que le 1X2 : prix "
+            "aberrant, périmé ou isolé. **Elle a été écartée** et les "
+            "probabilités ci-dessous sont dérivées du 1X2 seul.")
     if contraint:
         st.success(
             f"**Calé sur le marché.** La cote over/under 2,5 de {n_books_ou} "
@@ -106,10 +128,10 @@ def bloc_buts(ligne, totaux: pd.DataFrame | None = None) -> None:
     """Carte « Marchés de buts » du détail d'un match."""
     with st.container(border=True):
         theme.titre_section("Marchés de buts")
-        imp, contraint = matrice_du_match(ligne)
+        imp, contraint, prix_ecarte = matrice_du_match(ligne)
         p_max = max(float(ligne.p_1), float(ligne.p_N), float(ligne.p_2))
         bandeau_source(imp, contraint, int(getattr(ligne, "n_books_ou", 0) or 0),
-                       p_max=p_max)
+                       p_max=p_max, prix_ecarte=prix_ecarte)
         if not imp.fiable:
             return
 
@@ -127,9 +149,10 @@ def bloc_buts(ligne, totaux: pd.DataFrame | None = None) -> None:
                   delta_color="off")
 
         if len(fiabilite_buts()) == 0:
-            st.caption("La colonne « réussite historique » est vide : lancez "
-                       "`uv run python research/fiabilite_buts.py` pour la "
-                       "calculer une fois pour toutes.")
+            motif = fiabilite_buts().attrs.get("motif", "table non calculée")
+            st.caption(f"La colonne « réussite historique » est vide ({motif}) : "
+                       "lancez `uv run python research/fiabilite_buts.py` pour la "
+                       "recalculer.")
 
         prix = _meilleur_prix(totaux, ligne.fixture_key)
         t = buts.marches_buts(imp.matrice, familles=[f for f, _, _ in FAMILLES],

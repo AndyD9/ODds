@@ -26,10 +26,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from odds import chemins
+
 BASE_MAIN = "https://www.football-data.co.uk/mmz4281"
 BASE_EXTRA = "https://www.football-data.co.uk/new"
 
-CACHE = Path(__file__).resolve().parents[3] / "research" / "data" / "raw"
+CACHE = chemins.CACHE_BRUT
 
 # --- championnats -----------------------------------------------------------
 # code -> (pays, nom, niveau)

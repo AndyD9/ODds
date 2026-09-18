@@ -24,7 +24,7 @@ def table(monkeypatch):
         "borne_inf": [0.0, 0.40, 0.70, 0.90],
         "borne_sup": [0.40, 0.45, 0.75, 1.01],
     })
-    monkeypatch.setattr(ana, "fiabilite_historique", lambda methode="shin": t)
+    monkeypatch.setattr(ana.fiabilite, "fiabilite_historique", lambda methode="shin": t)
     return t
 
 

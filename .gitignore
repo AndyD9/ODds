@@ -7,3 +7,6 @@ __pycache__/
 logs/
 .env
 .env.local
+
+# état irremplaçable : carnet de paris, base de collecte
+data/

@@ -44,6 +44,36 @@ D'où le réglage `ODDS_API_MARKETS=h2h,totals` : une cote de totaux améliore a
 que personne ne cote — sur « le domicile marque 2 buts ou plus », l'erreur de calibration passe
 de 0,021 à 0,007.
 
+## Couvrir plusieurs issues
+
+« Couvrir », c'est répartir la mise sur plusieurs issues **du même marché** pour perdre moins
+quand celle qu'on visait ne sort pas. L'outil calcule toutes les couvertures possibles d'un
+marché et dit, pour chacune, ce qu'elle gagne si elle sort, ce qu'elle perd sinon, et **ce
+qu'elle vaut en moyenne** — parce qu'aucune répartition ne crée d'espérance : celle d'une
+couverture est la somme de celles de ses jambes, et couvrir une issue sans valeur paie la marge
+une fois de plus.
+
+```bash
+uv run odds couvrir 1.90 3.76 2.90                                   # au livre dévigé
+uv run odds couvrir 1.90 3.76 2.90 --probas 0.58 0.24 0.18 --mise 10  # avec vos probabilités
+```
+
+Sur Monaco – Lens à 1,90 / 3,76 / 2,90 : couvrir les trois issues garantit une perte de 12,06 %
+(la marge, payée d'avance) ; couvrir Monaco et le nul est un « double chance » fabriqué à la main
+à 1,262 ; aucune répartition n'a d'espérance positive au prix du livre.
+
+La seule répartition que le moteur de mise propose est le **Kelly simultané** (Smoczynski &
+Tomkins, 2010) : il ne retient que les issues qui battent le marché une fois les autres prises
+en compte, et pour une seule issue redonne exactement la formule de prereg 0001 §4. Il peut
+couvrir une issue **sans valeur** quand la position sur les autres est grosse — c'est de la
+variance rachetée, pas de la valeur, et l'interface le dit. Les plafonds de §4 s'appliquent à la
+**somme** des jambes. Cadrage : [`prereg/0004-couverture.md`](prereg/0004-couverture.md).
+
+Dans le tableau de bord, la carte « Couvrir plusieurs issues » du détail d'un match propose le
+1X2, chaque ligne de total, les totaux par équipe et BTTS. Les jambes s'inscrivent au carnet sous
+un même groupe et la page « Mes paris » les juge sur leur **net**, jamais jambe par jambe
+([`decisions/0006`](decisions/0006-jambes-groupees.md)).
+
 ## Installation
 
 ```bash
@@ -231,7 +261,7 @@ s'arrête net une fois le plafond atteint.
 > et bloque la couche réseau du client pour toute la suite. Sans ce garde-fou, lancer les tests
 > dépensait de l'argent réel — c'est arrivé, pour ~100 crédits.
 
-Stockage : `research/data/odds_history.db` (SQLite), format long — une ligne par
+Stockage : `data/odds_history.db` (SQLite), format long — une ligne par
 (match, bookmaker, marché, sélection, instant). `observed_at` est **notre** horodatage UTC, pas
 celui du match : c'est la seule date qui autorise un backtest honnête. Seuls les **changements**
 sont écrits, l'historique est donc une série de mouvements et non un journal de sondages.
@@ -291,21 +321,33 @@ L'historique reste complet, mais aucune mesure en avant ne peut s'y appuyer.
 
 ```text
 src/odds/
+├── chemins.py               emplacements : data/ (état) et research/data/ (dérivé)
+├── temps.py                 horodatages UTC, un format par usage
+├── config.py                configuration locale (.env), secrets masqués
 ├── market/devig.py          Shin, power, odds ratio, proportionnelle (scalaire + vectorisé)
+├── market/couverture.py     partitions du catalogue, dutching, Kelly simultané
+├── market/vocabulaire.py    traduction unique code de pari <-> (market, selection) collecté
 ├── data/footballdata.py     ingestion et normalisation
-├── models/football/         Dixon-Coles (time decay, shrinkage, pyramides)
+├── data/oddsapi.py          client The Odds API, budget et /events gratuit
+├── data/collect.py          collecte propre, horodatée, dédupliquée, ordonnancée
+├── models/football/         Dixon-Coles ; catalogue des marchés de buts et matrice implicite
 ├── pit/walk_forward.py      harnais point-in-time
 ├── backtest/                découpage temporel, Brier, log loss, bootstrap par blocs
-├── config.py                configuration locale (.env), secrets masqués
-├── data/oddsapi.py          client The Odds API, budget et /events gratuit
-├── data/collect.py          collecte propre, horodatée, dédupliquée
-├── analysis.py              noyau partagé CLI / tableau de bord
+├── analysis/                noyau partagé CLI / tableau de bord
+│   ├── base.py              historique, dévig d'un livre, calibration, cartographies
+│   ├── sources.py           lecture des deux sources au format long
+│   ├── consensus.py         matchs à une date : consensus, verdict, totaux (MatchsDuJour)
+│   └── fiabilite.py         réussite mesurée par tranche, 1X2 et marchés de buts
+├── paper.py                 carnet papier : staking prereg §4, couvertures groupées, règlement, CLV
+├── app/                     tableau de bord Streamlit (dashboard, buts_ui, paris_ui, couverture_ui, theme)
 └── cli.py
 
-app/dashboard.py             tableau de bord Streamlit
+data/                        ÉTAT, à sauvegarder : paper.db, odds_history.db
+research/data/               dérivé, régénérable : cache brut, parquet, tables de fiabilité
+decisions/                   décisions techniques : contexte, options écartées, conséquences
 prereg/                      hypothèses pré-enregistrées, datées, avec leurs verdicts
 research/RESULTS.md          journal des résultats mesurés
-tests/                       209 tests, dont le test anti-fuite
+tests/                       tests, dont le test anti-fuite
 ```
 
 ## Tests

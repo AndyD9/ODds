@@ -36,17 +36,18 @@ est un cache reconstructible ; le carnet, non. Les mélanger ferait qu'un
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from odds import chemins, temps
+from odds.market import couverture as couverture_
+from odds.market.vocabulaire import selection_collectee
 from odds.models.football import buts
 
-RACINE = Path(__file__).resolve().parents[2]
-BASE_PARIS = RACINE / "research" / "data" / "paper.db"
-BDD_COLLECTE = RACINE / "research" / "data" / "odds_history.db"
+BASE_PARIS = chemins.BASE_PARIS
+BDD_COLLECTE = chemins.BDD_COLLECTE
 
 # ---------------------------------------------------------------------------
 # prereg 0001 §4 — figé le 2026-09-18, avant tout résultat
@@ -83,15 +84,12 @@ def libelle(code: str, dom: str = "Domicile", ext: str = "Extérieur") -> str:
 BENCHMARKS_CLOTURE = ("betfair_ex_eu", "betfair_exchange", "pinnacle",
                       "matchbook", "_moyenne_marche")
 
-SELECTION = {"1": "home", "N": "draw", "2": "away"}
-
-
 def selections_collectees(code: str) -> tuple[tuple[str, str], ...]:
-    """Où retrouver ce marché dans la base de collecte, par ordre de préférence.
+    """Où retrouver ce marché dans la base de collecte.
 
-    Les deux sources ne nomment pas les totaux pareil : The Odds API écrit
-    ``market='totals', selection='over_2.5'``, football-data écrit
-    ``market='OU25', selection='over'`` et ne publie que la ligne 2,5.
+    La traduction vit dans ``odds.market.vocabulaire`` : c'est la même que
+    celle du consensus, et les deux sources de collecte écrivent désormais
+    les totaux sous la même graphie.
 
     Renvoie un tuple vide pour les marchés qu'on ne collecte pas — totaux par
     équipe et BTTS, qui sont des marchés additionnels réservés aux offres
@@ -100,16 +98,8 @@ def selections_collectees(code: str) -> tuple[tuple[str, str], ...]:
     quelques dizaines de paris (prereg §5), et il manquera précisément là où
     la probabilité est dérivée plutôt que lue.
     """
-    if code in SELECTION:
-        return (("1X2", SELECTION[code]),)
-    morceaux = code.split("_")
-    if len(morceaux) == 3 and morceaux[0] == "total":
-        sens, ligne = morceaux[1], morceaux[2]
-        paires = [("totals", f"{sens}_{ligne}")]
-        if ligne == "2.5":
-            paires.append(("OU25", sens))
-        return tuple(paires)
-    return ()
+    paire = selection_collectee(code)
+    return (paire,) if paire is not None else ()
 
 
 # ===========================================================================
@@ -235,6 +225,74 @@ def proposer_mise(bankroll: float, p: float, cote: float,
             "mise": round(max(0.0, mise), 2), "plafond": plafond, "motif": motif}
 
 
+def _borner(theorique: float, bankroll: float, exposition: float):
+    """Applique les deux plafonds de §4 à une mise théorique. Partagé."""
+    plafond_match = PLAFOND_MATCH * bankroll
+    reste_exposition = max(0.0, PLAFOND_EXPOSITION * bankroll - exposition)
+    if theorique > plafond_match and plafond_match <= reste_exposition:
+        return plafond_match, "match", \
+            f"Plafonné à {100 * PLAFOND_MATCH:.0f} % de bankroll par match (§4)."
+    if theorique > reste_exposition:
+        return reste_exposition, "exposition", \
+            (f"Plafonné par l'exposition simultanée : "
+             f"{100 * PLAFOND_EXPOSITION:.0f} % de bankroll au total (§4).")
+    return theorique, None, "Kelly fractionnaire, sous les deux plafonds."
+
+
+def proposer_couverture(bankroll: float, probas: dict, cotes: dict,
+                        exposition: float = 0.0,
+                        partition: tuple[str, ...] | None = None,
+                        **signaux) -> dict:
+    """Répartition proposée sur les issues exclusives d'un marché (prereg 0004).
+
+    Même moteur que ``proposer_mise``, étendu à plusieurs issues : les
+    fractions viennent de ``couverture.kelly_simultane`` — pour une seule
+    issue cotée, c'est exactement ``kelly`` — puis ``f_base × confiance`` et
+    les deux plafonds de §4 s'appliquent à la **somme** des mises. Le
+    plafond par match porte sur le match, pas sur la jambe : trois jambes à
+    1 % chacune seraient 3 % sur un seul coup d'envoi.
+
+    Quand aucune issue ne bat sa réserve, le moteur ne propose rien. Il ne
+    propose jamais une couverture complète à perte garantie, quelle que soit
+    la demande : ce n'est pas une mise, c'est un don au bookmaker.
+    """
+    if bankroll <= 0:
+        return {"fractions": {}, "mises": {}, "total": 0.0, "confiance": 0.0,
+                "f_effectif": 0.0, "total_theorique": 0.0, "plafond": "bankroll",
+                "motif": "Bankroll épuisée.", "couverture": None}
+
+    fractions = couverture_.kelly_simultane(probas, cotes, partition)
+    c = confiance(**{x: signaux.get(x) for x in
+                     ("n_hist", "n_books", "ev_robuste", "p_cotee")})
+    f_effectif = F_BASE * c["confiance"]
+    theoriques = {k: bankroll * v * f_effectif for k, v in fractions.items() if v > 0}
+    total_theorique = float(sum(theoriques.values()))
+
+    if not theoriques:
+        return {"fractions": fractions, "mises": {}, "total": 0.0,
+                "confiance": c["confiance"], "detail_confiance": c,
+                "f_effectif": f_effectif, "total_theorique": 0.0,
+                "plafond": "kelly", "couverture": None,
+                "motif": ("À ces prix, aucune issue ne bat le marché une fois "
+                          "les autres retenues : l'espérance de toute "
+                          "répartition est nulle ou négative. Le moteur ne "
+                          "propose rien.")}
+
+    total, plafond, motif = _borner(total_theorique, bankroll, exposition)
+    echelle = total / total_theorique if total_theorique > 0 else 0.0
+    mises = {k: round(v * echelle, 2) for k, v in theoriques.items()}
+    mises = {k: v for k, v in mises.items() if v > 0}
+    cv = (couverture_.Couverture(
+        tuple(partition or couverture_.PARTITIONS[
+            couverture_.partition_de(next(iter(probas)))]),
+        dict(probas), {k: cotes[k] for k in mises}, mises) if mises else None)
+    return {"fractions": fractions, "mises": mises,
+            "total": round(float(sum(mises.values())), 2),
+            "confiance": c["confiance"], "detail_confiance": c,
+            "f_effectif": f_effectif, "total_theorique": total_theorique,
+            "plafond": plafond, "motif": motif, "couverture": cv}
+
+
 # ===========================================================================
 # Stockage
 # ===========================================================================
@@ -267,7 +325,8 @@ CREATE TABLE IF NOT EXISTS pari (
     buts_dom        INTEGER,
     buts_ext        INTEGER,
     regle_a         TEXT,
-    note            TEXT
+    note            TEXT,
+    groupe          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pari_match ON pari(fixture_key, issue);
 CREATE INDEX IF NOT EXISTS idx_pari_kickoff ON pari(kickoff);
@@ -282,11 +341,19 @@ CREATE TABLE IF NOT EXISTS reglage (
 # Colonnes ajoutées avec l'ouverture aux marchés de buts. SQLite n'a pas de
 # "ADD COLUMN IF NOT EXISTS" : on compare au schéma existant, comme dans
 # data/collect.py.
-MIGRATIONS = {"marche": "TEXT", "buts_dom": "INTEGER", "buts_ext": "INTEGER"}
+MIGRATIONS = {"marche": "TEXT", "buts_dom": "INTEGER", "buts_ext": "INTEGER",
+              # v3 — les jambes d'une même couverture partagent un ``groupe``
+              # (decisions/0006). NULL pour un pari isolé.
+              "groupe": "TEXT"}
+
+# Version du schéma, inscrite dans ``reglage`` une fois la migration faite.
+# La page « Mes paris » ouvre plusieurs connexions par affichage : sans ce
+# jalon, les UPDATE de conversion rejoueraient à chaque fois.
+SCHEMA_VERSION = "3"
 
 
 def _migrer(con: sqlite3.Connection) -> None:
-    """Amène un carnet existant au schéma courant, sans perte.
+    """Amène un carnet existant au schéma courant, sans perte. Une seule fois.
 
     Deux conversions, toutes deux irréversibles si on les rate — d'où leur
     caractère explicite :
@@ -297,6 +364,11 @@ def _migrer(con: sqlite3.Connection) -> None:
       au pari. Un score ne se compare pas ainsi : la colonne porte désormais
       le VERDICT ("gagne", "perdu", "annule"), calculé une fois pour toutes.
     """
+    r = con.execute("SELECT valeur FROM reglage WHERE cle = 'schema_version'"
+                    ).fetchone()
+    if r and r[0] == SCHEMA_VERSION:
+        return
+
     existantes = {r[1] for r in con.execute("PRAGMA table_info(pari)")}
     for nom, typ in MIGRATIONS.items():
         if nom not in existantes:
@@ -306,20 +378,27 @@ def _migrer(con: sqlite3.Connection) -> None:
     con.execute("UPDATE pari SET resultat = CASE WHEN resultat = issue "
                 "THEN 'gagne' ELSE 'perdu' END "
                 "WHERE resultat IN ('1', 'N', '2')")
+    con.execute("INSERT INTO reglage (cle, valeur) VALUES ('schema_version', ?) "
+                "ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur",
+                (SCHEMA_VERSION,))
     con.commit()
 
 
 def _connexion(chemin: Path | None = None) -> sqlite3.Connection:
-    p = Path(chemin or BASE_PARIS)
+    p = Path(chemin) if chemin else chemins.rapatrier(BASE_PARIS)
     p.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(p)
     con.executescript(SCHEMA)
     _migrer(con)
+    # Hors de SCHEMA : sur un carnet antérieur, la colonne n'existe qu'après
+    # la migration, et un index sur une colonne absente ferait échouer
+    # l'ouverture avant qu'elle ait eu lieu.
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pari_groupe ON pari(groupe)")
     return con
 
 
 def _maintenant() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return temps.seconde()
 
 
 def bankroll_initiale(chemin: Path | None = None) -> float:
@@ -353,8 +432,14 @@ def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
                 bankroll_avant: float | None = None,
                 kelly_: float | None = None, f_effectif: float | None = None,
                 plafond: str | None = None, note: str | None = None,
+                groupe: str | None = None,
                 chemin: Path | None = None) -> int:
-    """Inscrit un pari papier. Renvoie son identifiant."""
+    """Inscrit un pari papier. Renvoie son identifiant.
+
+    ``groupe`` relie les jambes d'une même couverture ; un pari isolé n'en a
+    pas. Pour inscrire une couverture entière d'un coup, voir
+    ``enregistrer_couverture``.
+    """
     if issue not in buts.MARCHES:
         raise ValueError(
             f"marché invalide : {issue!r}. Attendu un code du catalogue "
@@ -370,16 +455,61 @@ def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
             "INSERT INTO pari (place_a, fixture_key, source, league, kickoff, "
             "home_team, away_team, issue, marche, cote, bookmaker, p_modele, "
             "methode, mise, mise_proposee, bankroll_avant, kelly, f_effectif, "
-            "plafond, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "plafond, note, groupe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (_maintenant(), fixture_key, source, league, kickoff, home_team,
              away_team, issue, buts.marche(issue).famille, float(cote),
              bookmaker, float(p_modele), methode, float(mise), mise_proposee,
-             bankroll_avant, kelly_, f_effectif, plafond, note))
+             bankroll_avant, kelly_, f_effectif, plafond, note, groupe))
         con.commit()
         return int(cur.lastrowid)
     finally:
         con.close()
 
+
+
+def enregistrer_couverture(fixture_key: str, kickoff: str, home_team: str,
+                           away_team: str, cv: couverture_.Couverture,
+                           *, bookmakers: dict | None = None,
+                           mises_proposees: dict | None = None,
+                           league: str | None = None, source: str | None = None,
+                           methode: str | None = None,
+                           bankroll_avant: float | None = None,
+                           f_effectif: float | None = None,
+                           plafond: str | None = None, note: str | None = None,
+                           chemin: Path | None = None) -> str:
+    """Inscrit toutes les jambes d'une couverture sous un même ``groupe``.
+
+    Une seule transaction : une couverture à moitié écrite serait une
+    position que personne n'a voulue. Renvoie l'identifiant du groupe.
+
+    Chaque jambe garde sa propre cote, son propre bookmaker et sa propre
+    probabilité — c'est ce qui permet de la régler et de lui calculer un
+    CLV comme à n'importe quel pari. Le groupe n'ajoute qu'un lien.
+    """
+    if cv.total <= 0:
+        raise ValueError("couverture sans mise")
+    bookmakers = bookmakers or {}
+    mises_proposees = mises_proposees or {}
+    fractions = couverture_.kelly_simultane(cv.probas, cv.cotes, cv.partition)
+    groupe = f"cv-{fixture_key}-{_maintenant().replace(' ', 'T')}"
+
+    con = _connexion(chemin)
+    try:
+        for code in cv.codes:
+            con.execute(
+                "INSERT INTO pari (place_a, fixture_key, source, league, kickoff, "
+                "home_team, away_team, issue, marche, cote, bookmaker, p_modele, "
+                "methode, mise, mise_proposee, bankroll_avant, kelly, f_effectif, "
+                "plafond, note, groupe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (_maintenant(), fixture_key, source, league, kickoff, home_team,
+                 away_team, code, buts.marche(code).famille, float(cv.cotes[code]),
+                 bookmakers.get(code), float(cv.probas[code]), methode,
+                 float(cv.mises[code]), mises_proposees.get(code), bankroll_avant,
+                 fractions.get(code), f_effectif, plafond, note, groupe))
+        con.commit()
+    finally:
+        con.close()
+    return groupe
 
 VERDICTS = ("gagne", "perdu", "annule")
 
@@ -575,11 +705,15 @@ def bilan(d: pd.DataFrame) -> dict:
     profit = float(regles.profit.sum()) if n else 0.0
     roi = (profit / mises) if mises > 0 else float("nan")
 
-    # Écart-type du rendement par pari, pondéré par la mise : c'est ce qui
-    # donne la largeur de l'intervalle autour du ROI.
+    # Le ROI est un RATIO de sommes (profit total / mises totales), pas la
+    # moyenne des rendements par pari : avec des mises inégales, les deux
+    # diffèrent, et l'écart-type des rendements ne décrit pas le ROI qu'on
+    # affiche à côté. Erreur-type de l'estimateur par ratio (linéarisation) :
+    # les résidus e_i = profit_i − ROI × mise_i somment à zéro par
+    # construction, et Var(ROI) ≈ n · Var(e) / (Σ mises)².
     if n > 1 and mises > 0:
-        r = (regles.profit / regles.mise).to_numpy(float)
-        ic95 = 1.96 * float(np.std(r, ddof=1)) / np.sqrt(n)
+        e = (regles.profit - roi * regles.mise).to_numpy(float)
+        ic95 = 1.96 * np.sqrt(n * float(np.var(e, ddof=1))) / mises
     else:
         ic95 = float("nan")
 
@@ -604,6 +738,53 @@ def bilan(d: pd.DataFrame) -> dict:
         "clv_ic95": (1.96 * float(avec_clv.clv.std(ddof=1)) / np.sqrt(len(avec_clv))
                      if len(avec_clv) > 1 else float("nan")),
     }
+
+
+def couvertures(d: pd.DataFrame) -> pd.DataFrame:
+    """Les couvertures du carnet, une ligne par groupe, résultat net compris.
+
+    Le bilan par jambe est juste mais trompeur : une couverture gagne sur
+    une jambe et perd sur les autres **par construction**. C'est le net du
+    groupe qui dit ce que la position a rendu — et ``pire`` ce qu'elle
+    risquait, tel qu'on l'avait accepté en la prenant.
+    """
+    colonnes = ["groupe", "fixture_key", "home_team", "away_team", "kickoff",
+                "n_jambes", "issues", "mise", "retour", "profit", "statut", "pire"]
+    if len(d) == 0 or "groupe" not in d.columns or d.groupe.notna().sum() == 0:
+        return pd.DataFrame(columns=colonnes)
+    g = d[d.groupe.notna()].copy()
+
+    def _statut(s):
+        if s.isna().any():
+            return "en attente"
+        if s.eq("annule").all():
+            return "annulé"
+        return "réglée"
+
+    def _pire(sous):
+        # Le pire cas est la perte de tout, sauf si une jambe couvre : le
+        # profit minimal parmi « une jambe gagne » et « aucune ne gagne ».
+        total = float(sous.mise.sum())
+        retours = [float(m * c) for m, c in zip(sous.mise, sous.cote)]
+        codes = set(sous.issue)
+        complete = couverture_.est_partition(codes)
+        pire = min(retours) - total if complete else min(min(retours) - total, -total)
+        return pire
+
+    lignes = []
+    for grp, sous in g.groupby("groupe", sort=False):
+        regle = sous.resultat.notna().all()
+        lignes.append({
+            "groupe": grp, "fixture_key": sous.fixture_key.iloc[0],
+            "home_team": sous.home_team.iloc[0], "away_team": sous.away_team.iloc[0],
+            "kickoff": sous.kickoff.iloc[0], "n_jambes": len(sous),
+            "issues": tuple(sous.issue), "mise": float(sous.mise.sum()),
+            "retour": float(sous.retour.sum()) if regle else np.nan,
+            "profit": float(sous.profit.sum()) if regle else np.nan,
+            "statut": _statut(sous.resultat), "pire": _pire(sous),
+        })
+    return pd.DataFrame(lignes, columns=colonnes).sort_values(
+        "kickoff", ascending=False).reset_index(drop=True)
 
 
 # ===========================================================================
@@ -657,7 +838,7 @@ def capturer_clotures(chemin: Path | None = None,
         a_faire = pd.read_sql(
             "SELECT id, fixture_key, issue FROM pari "
             "WHERE cote_cloture IS NULL AND kickoff <= ?",
-            con, params=(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),))
+            con, params=(temps.minute(),))
         n = 0
         for r in a_faire.itertuples():
             trouve = _cloture_observee(r.fixture_key, r.issue, bdd)

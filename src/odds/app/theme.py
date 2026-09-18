@@ -4,7 +4,7 @@ Trois couches, dans cet ordre de préférence :
 
 1. ``.streamlit/config.toml`` — tout ce que le thème natif sait exprimer
    (couleurs, rayons, typographie, palettes de graphiques).
-2. ``app/theme.css`` — la géométrie que le thème ne dit pas : tuiles,
+2. ``odds/app/theme.css`` — la géométrie que le thème ne dit pas : tuiles,
    alertes bordées, puces, tableaux dessinés.
 3. ce module — les quelques fragments que Streamlit n'a pas du tout :
    le tableau HTML de la maquette, ses pastilles, sa barre 1 · N · 2, et

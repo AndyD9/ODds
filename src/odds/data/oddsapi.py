@@ -25,7 +25,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import requests
 
-from odds import config
+from odds import config, temps
+from odds.market.vocabulaire import MARCHE_1X2
 
 BASE = "https://api.the-odds-api.com/v4"
 
@@ -165,7 +166,7 @@ def _normaliser(evts: list, sport: str) -> pd.DataFrame:
                         "home_team": dom,
                         "away_team": ext,
                         "bookmaker": b["key"],
-                        "market": "1X2" if m["key"] == "h2h" else m["key"],
+                        "market": MARCHE_1X2 if m["key"] == "h2h" else m["key"],
                         "selection": sel,
                         "odds": float(o["price"]),
                         "book_updated_at": b.get("last_update"),
@@ -173,10 +174,8 @@ def _normaliser(evts: list, sport: str) -> pd.DataFrame:
     if not lignes:
         return pd.DataFrame()
     d = pd.DataFrame(lignes)
-    d["kickoff"] = (pd.to_datetime(d.kickoff, utc=True)
-                      .dt.tz_convert(None).dt.strftime("%Y-%m-%d %H:%M"))
-    d["book_updated_at"] = (pd.to_datetime(d.book_updated_at, utc=True, errors="coerce")
-                              .dt.tz_convert(None).dt.strftime("%Y-%m-%d %H:%M:%S"))
+    d["kickoff"] = temps.serie_en_minutes(d.kickoff)
+    d["book_updated_at"] = temps.serie_en_secondes(d.book_updated_at)
     return d
 
 

@@ -1,6 +1,6 @@
 # Thème repris de la maquette « Main » (Main-html.zip).
 # Les valeurs exactes — couleurs, rayons, typographie — viennent de son bloc
-# <style> ; ce qui ne s'exprime pas ici est repris dans app/theme.css.
+# <style> ; ce qui ne s'exprime pas ici est repris dans src/odds/app/theme.css.
 
 [theme]
 base = "dark"

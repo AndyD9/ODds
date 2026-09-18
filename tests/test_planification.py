@@ -114,3 +114,25 @@ def test_chaque_ligne_porte_un_motif():
     d = planifier(_plan(a=1.0, b=11.0, c=30.0, d=200.0), dispo=1,
                   cout_unitaire=1, maintenant=MAINTENANT)
     assert d.motif.notna().all()
+
+
+def test_la_reserve_couvre_un_coup_d_envoi_juste_apres_minuit():
+    """À 21 h, un match à 00 h 30 se relèvera à 22 h 30 — sur le budget
+    d'AUJOURD'HUI. Sa passe de clôture doit être réservée au même titre que
+    celle d'un match à 23 h 30, sinon la fenêtre « veille » d'un autre
+    championnat la consomme et la clôture tombe sur un budget vide."""
+    soir = pd.Timestamp("2026-09-18 21:00:00", tz="UTC")
+    plan = pd.DataFrame([
+        {"sport": "nuit", "n_total": 1, "n_proches": 1,
+         "prochain": soir + pd.Timedelta(hours=3.5), "erreur": None},
+        {"sport": "lointain", "n_total": 1, "n_proches": 1,
+         "prochain": soir + pd.Timedelta(hours=30), "erreur": None},
+    ])
+    d = planifier(plan, dispo=1, cout_unitaire=1, maintenant=soir).set_index("sport")
+    assert not d.loc["lointain", "retenu"]
+    assert "réservé" in d.loc["lointain", "motif"]
+    # Et à 22 h 30, la clôture de « nuit » est servie sur ce crédit.
+    d2 = planifier(plan, dispo=1, cout_unitaire=1,
+                   maintenant=soir + pd.Timedelta(hours=1.5)).set_index("sport")
+    assert d2.loc["nuit", "retenu"]
+    assert d2.loc["nuit", "fenetre"] == FENETRES[0][0]

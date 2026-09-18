@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import odds.analysis as ana
+from odds import chemins
 from odds.analysis import AGREGATS, AUTRE_INSTANT, HORS_CONSENSUS
 
 
@@ -44,7 +45,8 @@ def bdd(tmp_path, monkeypatch):
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", lignes)
     con.commit()
     con.close()
-    monkeypatch.setattr(ana, "BDD_COLLECTE", p)
+    # Le chemin est lu à l'appel dans `chemins` : c'est là qu'on le détourne.
+    monkeypatch.setattr(chemins, "BDD_COLLECTE", p)
     return p
 
 
@@ -62,8 +64,8 @@ def test_preference_odds_api_sur_football_data(bdd):
     con.commit(); con.close()
 
     r = ana.matchs_a_la_date("2026-10-01")
-    assert set(r["detail"].fixture_key) == {"fk1"}, "les deux sources ont été mélangées"
-    assert 9.99 not in set(r["detail"].cote_1)
+    assert set(r.detail.fixture_key) == {"fk1"}, "les deux sources ont été mélangées"
+    assert 9.99 not in set(r.detail.cote_1)
 
 
 def test_constantes_coherentes():
@@ -73,13 +75,13 @@ def test_constantes_coherentes():
 
 def test_source_collecte(bdd):
     r = ana.matchs_a_la_date("2026-10-01")
-    assert r["source"] == "collecte"
-    assert len(r["resume"]) == 1
+    assert r.source == "collecte"
+    assert len(r.resume) == 1
 
 
 def test_seule_la_derniere_observation_compte(bdd):
     """Une cote plus ancienne du même book ne doit pas apparaître."""
-    d = ana.matchs_a_la_date("2026-10-01")["detail"]
+    d = ana.matchs_a_la_date("2026-10-01").detail
     assert d[d.bookmaker == "bet365"].cote_1.iloc[0] == pytest.approx(2.00)
     assert len(d[d.bookmaker == "bet365"]) == 1
 
@@ -91,10 +93,10 @@ def test_consensus_exclut_les_agregats(bdd):
     tirée vers le bas et l'écart de price shopping deviendrait fictif.
     """
     r = ana.matchs_a_la_date("2026-10-01")
-    res = r["resume"].iloc[0]
+    res = r.resume.iloc[0]
     assert res.n_books == 3, "3 bookmakers réels, pas 5"
 
-    d = r["detail"]
+    d = r.detail
     reels = d[~d.bookmaker.isin(HORS_CONSENSUS)]
     attendu = float(np.median(reels.p_1))
     somme = float(np.median(reels.p_1) + np.median(reels.p_N) + np.median(reels.p_2))
@@ -104,15 +106,15 @@ def test_consensus_exclut_les_agregats(bdd):
 def test_meilleur_prix_inclut_les_agregats(bdd):
     """Le meilleur prix DISPONIBLE inclut le max de marché — c'est bien le
     meilleur prix qu'on pourrait prendre."""
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     assert res.best_1 == pytest.approx(2.60)
 
 
 def test_probabilites_somment_a_un(bdd):
     r = ana.matchs_a_la_date("2026-10-01")
-    res = r["resume"]
+    res = r.resume
     assert (res.p_1 + res.p_N + res.p_2).to_numpy() == pytest.approx(np.ones(len(res)), abs=1e-9)
-    d = r["detail"]
+    d = r.detail
     assert (d.p_1 + d.p_N + d.p_2).to_numpy() == pytest.approx(np.ones(len(d)), abs=1e-9)
 
 
@@ -123,7 +125,7 @@ def test_ev_utilise_le_consensus_leave_one_out(bdd):
     propre écart, ce qui sous-estime systématiquement l'EV.
     """
     r = ana.matchs_a_la_date("2026-10-01")
-    res, det = r["resume"].iloc[0], r["detail"]
+    res, det = r.resume.iloc[0], r.detail
 
     for s, col in (("1", "p_1"), ("N", "p_N"), ("2", "p_2")):
         autres = det[(det.bookmaker != res[f"book_{s}"])
@@ -139,7 +141,7 @@ def test_ev_utilise_le_consensus_leave_one_out(bdd):
 def test_le_book_genereux_est_bien_exclu(bdd):
     """Vérification directe : le consensus leave-one-out diffère du
     consensus complet dès que le meilleur prix est atypique."""
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     # _max_marche affiche 2.60 sur l'issue 1, très au-dessus des books réels
     assert res.book_1 == "_max_marche"
     assert res.p_loo_1 != pytest.approx(res.p_1, abs=1e-6), (
@@ -147,7 +149,7 @@ def test_le_book_genereux_est_bien_exclu(bdd):
 
 
 def test_soutien_compte_les_books_au_meilleur_prix(bdd):
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     # 2.60 n'est affiché que par _max_marche
     assert res.soutien_1 == 1
     assert res.prime_1 > 0, "le meilleur prix dépasse le deuxième"
@@ -155,14 +157,14 @@ def test_soutien_compte_les_books_au_meilleur_prix(bdd):
 
 def test_verdict_sur_un_consensus_indigent(bdd):
     """Moins de books que le minimum -> aucun verdict positif possible."""
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     assert res.n_books < ana.N_BOOKS_MINI
     assert res.verdict == "Trop peu de books"
 
 
 def test_ev_bornes_sur_les_quatre_methodes(bdd):
     """ev_min et ev_max encadrent l'EV de la méthode retenue."""
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     assert res.ev_min <= res.ecart_prix <= res.ev_max + 1e-9
     assert bool(res.ev_robuste) == bool(res.ev_min > 0)
 
@@ -185,10 +187,10 @@ def test_verdict_etats(champ, valeur, attendu):
 
 
 def test_date_sans_match(bdd, monkeypatch):
-    monkeypatch.setattr(ana, "charger", lambda *a, **k: pd.DataFrame(
+    monkeypatch.setattr(ana.base, "charger", lambda *a, **k: pd.DataFrame(
         {"date": pd.to_datetime([]), "result": []}))
     r = ana.matchs_a_la_date("2030-01-01")
-    assert r["source"] is None and len(r["resume"]) == 0
+    assert r.vide and len(r.resume) == 0
 
 
 def test_dispersion_nulle_avec_un_seul_book(bdd):
@@ -196,6 +198,6 @@ def test_dispersion_nulle_avec_un_seul_book(bdd):
     con = sqlite3.connect(bdd)
     con.execute("DELETE FROM odds_snapshot WHERE bookmaker IN ('bwin','betfair_exchange')")
     con.commit(); con.close()
-    res = ana.matchs_a_la_date("2026-10-01")["resume"].iloc[0]
+    res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     assert res.n_books == 1
     assert res.dispersion == pytest.approx(0.0)

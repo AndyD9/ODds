@@ -1,7 +1,7 @@
 """Interface du carnet papier — formulaire de pari et page de suivi.
 
 La logique vit dans ``odds.paper`` ; ce module ne fait que la mettre à
-l'écran, dans le langage visuel de la maquette (``app/theme.py``).
+l'écran, dans le langage visuel de la maquette (``odds/app/theme.py``).
 
 Deux partis pris d'affichage, qui suivent le pré-enregistrement :
 
@@ -15,16 +15,18 @@ Deux partis pris d'affichage, qui suivent le pré-enregistrement :
 
 from __future__ import annotations
 
+from html import escape
+
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-import buts_ui
-import theme
 from odds import paper
-from odds.models.football import buts
 from odds.analysis import (AGREGATS, AUTRE_INSTANT, fiabilite_buts,
-                          tranche_fiabilite, tranche_fiabilite_buts)
+                           tranche_fiabilite, tranche_fiabilite_buts)
+from odds.app import buts_ui, theme
+from odds.market.vocabulaire import selection_collectee
+from odds.models.football import buts
 
 LIB = {"1": "Domicile", "N": "Nul", "2": "Extérieur"}
 MOIS_FR = [None, "janvier", "février", "mars", "avril", "mai", "juin",
@@ -90,10 +92,10 @@ def _offres_totaux(totaux: pd.DataFrame | None, fk: str, code: str) -> pd.DataFr
     vide = pd.DataFrame(columns=["bookmaker", "cote"])
     if totaux is None or len(totaux) == 0:
         return vide
-    morceaux = code.split("_")
-    if len(morceaux) != 3 or morceaux[0] != "total" or morceaux[2] != "2.5":
+    paire = selection_collectee(code)
+    if paire is None or paire[0] == "1X2":
         return vide
-    d = totaux[(totaux.fixture_key == fk) & (totaux.selection == morceaux[1])
+    d = totaux[(totaux.fixture_key == fk) & (totaux.selection == paire[1])
                & ~totaux.bookmaker.astype(str).str.startswith("_")]
     if len(d) == 0:
         return vide
@@ -115,7 +117,8 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
                         "impossible de nommer un prix à prendre.")
         return
 
-    imp, contraint = buts_ui.matrice_du_match(ligne)
+    imp, contraint, _ = buts_ui.matrice_du_match(ligne)
+    n_books_ou = int(getattr(ligne, "n_books_ou", 0) or 0)
 
     with st.container(border=True):
         theme.titre_section("Parier (papier)")
@@ -139,6 +142,16 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
         if famille.startswith("Résultat"):
             probas = {"1": float(ligne.p_1), "N": float(ligne.p_N),
                       "2": float(ligne.p_2)}
+        elif not imp.fiable:
+            # La carte « Marchés de buts » a déjà refusé d'afficher ces
+            # chiffres ; le formulaire ne peut pas être moins exigeant
+            # qu'elle et proposer une mise sur une matrice qui ne
+            # reproduit pas les prix qu'on lui a donnés.
+            st.error(
+                "La matrice de score ne reproduit pas les prix de ce match "
+                f"(écart {100 * imp.ecart_max:.2f} pts) : aucun pari sur un "
+                "marché de buts n'est proposé. Le 1X2 reste disponible.")
+            return
         else:
             probas = {c: buts.probabilite(imp.matrice, c) for c in codes}
 
@@ -222,9 +235,20 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
             else:
                 n_hist = 0             # tranche trop mince : mise bloquée
 
+        # Qualité de donnée : le nombre de livres qui ont réellement fixé
+        # cette probabilité. Pour le 1X2, et pour une matrice dérivée du
+        # 1X2 seul, ce sont les livres du 1X2. Quand la matrice est calée sur
+        # une cote de totaux, cette cote est une contrainte à part entière :
+        # si un seul bookmaker la fournit, la probabilité repose sur un seul
+        # prix, et la confiance doit le refléter — c'est précisément le cas
+        # où l'écart affiché ne mesure que la marge de ce livre.
+        n_books_pari = int(ligne.n_books)
+        if not est_1x2 and contraint:
+            n_books_pari = min(n_books_pari, n_books_ou)
+
         prop = paper.proposer_mise(
             bankroll=b["courante"], p=p, cote=cote, exposition=b["exposition"],
-            n_hist=n_hist, n_books=int(ligne.n_books),
+            n_hist=n_hist, n_books=n_books_pari,
             # `ev_robuste` ne qualifie que l'issue visée par l'écart de prix.
             # L'appliquer à une autre issue serait un emprunt abusif.
             ev_robuste=(bool(ligne.ev_robuste)
@@ -480,6 +504,38 @@ def _courbes(d: pd.DataFrame, b: dict) -> None:
                             use_container_width=True)
 
 
+def _couvertures(d: pd.DataFrame) -> None:
+    """Les couvertures, une ligne par groupe : c'est le net qui compte.
+
+    Le tableau des paris réglés montre chaque jambe, et une couverture y
+    gagne sur une jambe et perd sur les autres par construction. Sans cette
+    vue, le taux de réussite du carnet se dégrade mécaniquement à chaque
+    couverture sans que rien n'ait été mal joué.
+    """
+    c = paper.couvertures(d)
+    if len(c) == 0:
+        return
+    theme.titre_section("Couvertures — résultat net par groupe")
+    TON = {"réglée": "info", "en attente": "outline", "annulé": "outline"}
+    vue = pd.DataFrame({
+        "Coup d'envoi": c.kickoff.str[:16],
+        "Match": c.home_team + " – " + c.away_team,
+        "Jambes": [" + ".join(paper.libelle(x, h, a) for x in issues)
+                   for issues, h, a in zip(c.issues, c.home_team, c.away_team)],
+        "Mise": c.mise.map("{:.2f}".format),
+        "Pire cas accepté": c.pire.map("{:+.2f}".format),
+        "Statut": [theme.badge(s, TON.get(s, "outline")) for s in c.statut],
+        "Net": [("—" if pd.isna(v) else
+                 theme.badge(f"{v:+.2f}", "pos" if v > 0 else ("neg" if v < 0 else "neu")))
+                for v in c.profit],
+    })
+    theme.tableau(vue, html=["Statut", "Net"],
+                  aligne_droite=["Mise", "Pire cas accepté", "Net"],
+                  classes={"Coup d'envoi": "od-mono"})
+    st.caption("Une couverture est jugée sur son net, jamais jambe par jambe : "
+               "perdre la jambe non sortie fait partie du prix accepté en la prenant.")
+
+
 def _historique(d: pd.DataFrame) -> None:
     regles = d[d.resultat.notna()]
     theme.titre_section("Paris réglés")
@@ -492,8 +548,12 @@ def _historique(d: pd.DataFrame) -> None:
         "N°": regles.id,
         "Coup d'envoi": regles.kickoff.str[:16],
         "Match": regles.home_team + " – " + regles.away_team,
-        "Pari": [paper.libelle(c, d, e) for c, d, e in
-                 zip(regles.issue, regles.home_team, regles.away_team)],
+        "Pari": [escape(paper.libelle(c, d, e)) + (" " + theme.badge("couv.", "info")
+                                           if isinstance(g, str) and g else "")
+                 for c, d, e, g in zip(regles.issue, regles.home_team,
+                                       regles.away_team,
+                                       regles.groupe if "groupe" in regles.columns
+                                       else [None] * len(regles))],
         "Cote": regles.cote.map("{:.2f}".format),
         "Chez": regles.bookmaker.fillna("—"),
         "Mise": regles.mise.map("{:.2f}".format),
@@ -508,7 +568,7 @@ def _historique(d: pd.DataFrame) -> None:
                  theme.badge(f"{v:+.2f} %", "pos" if v > 0 else "neg"))
                 for v in regles.clv],
     })
-    theme.tableau(vue, html=["Statut", "Profit", "CLV"],
+    theme.tableau(vue, html=["Pari", "Statut", "Profit", "CLV"],
                   aligne_droite=["N°", "Cote", "Mise", "Score", "Profit",
                                  "Clôture", "CLV"],
                   classes={"Coup d'envoi": "od-mono", "Chez": "od-muted"})
@@ -566,6 +626,7 @@ def page() -> None:
         d, libelle = tout, "tout l'historique"
 
     _bilan(d, libelle)
+    _couvertures(d)
     _courbes(d, b)
     _historique(d)
     _reglages(b)
