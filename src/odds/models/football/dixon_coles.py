@@ -164,8 +164,17 @@ def score_matrix(lam: float, mu: float, rho: float, max_goals: int = 12) -> np.n
     return m / m.sum()
 
 
-def predict_1x2(params: DCParams, home: str, away: str, max_goals: int = 12) -> np.ndarray:
-    """(P(dom), P(nul), P(ext)). Équipe inconnue -> rating moyen (= 0 après shrinkage)."""
+def predict_lambdas(params: DCParams, home: str, away: str) -> tuple[float, float]:
+    """Buts attendus (lambda_domicile, mu_extérieur) pour une affiche.
+
+    C'est la sortie primitive du modèle : le 1X2 comme les marchés de buts
+    en découlent tous deux par ``score_matrix``. L'exposer évite de faire
+    transiter une matrice complète par le harnais de backtest, et garantit
+    que 1X2 et totaux parlent de la MÊME distribution — deux chemins de
+    calcul distincts finiraient par diverger.
+
+    Équipe inconnue -> rating moyen (= 0 après shrinkage).
+    """
     idx = params.index
     i, j = idx.get(home), idx.get(away)
     a_i = params.attack[i] if i is not None else 0.0
@@ -175,5 +184,11 @@ def predict_1x2(params: DCParams, home: str, away: str, max_goals: int = 12) -> 
 
     lam = float(np.exp(a_i + b_j + params.home_adv))
     mu = float(np.exp(a_j + b_i))
+    return lam, mu
+
+
+def predict_1x2(params: DCParams, home: str, away: str, max_goals: int = 12) -> np.ndarray:
+    """(P(dom), P(nul), P(ext)). Équipe inconnue -> rating moyen (= 0 après shrinkage)."""
+    lam, mu = predict_lambdas(params, home, away)
     m = score_matrix(lam, mu, params.rho, max_goals)
     return np.array([np.tril(m, -1).sum(), np.trace(m), np.triu(m, 1).sum()])

@@ -15,7 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from odds.models.football.dixon_coles import DCParams, fit_dixon_coles, pool_of, predict_1x2
+from odds.models.football.dixon_coles import (DCParams, fit_dixon_coles, pool_of,
+                                              predict_1x2, predict_lambdas)
 
 
 def demi_vie_vers_xi(demi_vie_jours: float) -> float:
@@ -88,10 +89,15 @@ def walk_forward(
             gamma_prec, rho_prec = gamma, rho
 
             params = DCParams(list(equipes), a, b, gamma, rho, len(passe), t0)
-            probas = np.vstack([predict_1x2(params, h, aw)
-                                for h, aw in zip(futur.home_team, futur.away_team)])
+            affiches = list(zip(futur.home_team, futur.away_team))
+            probas = np.vstack([predict_1x2(params, h, aw) for h, aw in affiches])
+            # Les buts attendus sont conservés en plus du 1X2 : avec rho,
+            # ils suffisent à reconstruire toute la matrice de score, donc
+            # tout marché de buts, sans refaire tourner l'ajustement.
+            lambdas = np.array([predict_lambdas(params, h, aw) for h, aw in affiches])
             out = futur.copy()
             out[["dc_h", "dc_d", "dc_a"]] = probas
+            out[["dc_lam", "dc_mu"]] = lambdas
             out["fit_as_of"] = t0
             out["fit_n"] = len(passe)
             out["fit_n_equipes"] = n

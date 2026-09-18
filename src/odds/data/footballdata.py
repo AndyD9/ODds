@@ -82,8 +82,34 @@ SCHEMA = [
     "home_team", "away_team", "home_goals", "away_goals", "result",
     "psc_h", "psc_d", "psc_a", "ps_h", "ps_d", "ps_a",
     "avgc_h", "avgc_d", "avgc_a",
-    "maxc_h", "maxc_d", "maxc_a", "odds_source", "source_file",
+    "maxc_h", "maxc_d", "maxc_a",
+    "psc_o25", "psc_u25", "avgc_o25", "avgc_u25", "maxc_o25", "maxc_u25",
+    "odds_source", "source_file",
 ]
+
+# Cotes over/under 2,5 à la clôture. Ajoutées pour disposer d'un BENCHMARK de
+# marché sur un marché de buts : sans elles, une probabilité de « 3 buts ou
+# plus » dérivée du 1X2 (odds.models.football.buts) ne peut être confrontée
+# à rien et resterait invérifiable.
+#
+# Deux limites à connaître avant d'en tirer quoi que ce soit :
+#
+# - les fichiers "extra" (16 championnats, 63 192 matchs, soit 40 % de
+#   l'historique) ne portent AUCUNE colonne over/under. Le benchmark
+#   n'existe que sur les grands championnats ;
+# - football-data ne publie `PC>2.5` qu'à partir de la saison 2019-20 :
+#   43 209 matchs environ, pas les 150 626 de l'historique 1X2.
+#
+# Ces colonnes sont donc vides pour la majorité des lignes, et c'est normal.
+# Toute mesure qui les utilise doit rapporter son propre n.
+COLONNES_COTES = [c for c in SCHEMA if c.split("_")[0] in
+                  ("psc", "ps", "avgc", "maxc")]
+
+COLONNES_OU = {
+    "psc_o25": "PC>2.5", "psc_u25": "PC<2.5",
+    "avgc_o25": "AvgC>2.5", "avgc_u25": "AvgC<2.5",
+    "maxc_o25": "MaxC>2.5", "maxc_u25": "MaxC<2.5",
+}
 
 
 def _fetch(url: str, dest: Path, pause: float = 0.3) -> bytes | None:
@@ -130,12 +156,28 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series:
 
 
 def _finalise(out: pd.DataFrame) -> pd.DataFrame:
-    """Qualifie la source de cotes et nettoie."""
+    """Qualifie la source de cotes et nettoie.
+
+    Les colonnes du schéma qu'une source ne porte pas sont créées vides
+    plutôt que réclamées : les fichiers "extra" n'ont ni cote précoce ni
+    over/under, et c'est une propriété de la source, pas une anomalie.
+    """
+    for colonne in SCHEMA:
+        if colonne not in out.columns:
+            out[colonne] = pd.Series([pd.NA] * len(out), dtype="Float64")
     pinnacle = out[["psc_h", "psc_d", "psc_a"]].notna().all(axis=1)
     marche = out[["avgc_h", "avgc_d", "avgc_a"]].notna().all(axis=1)
     out["odds_source"] = pd.NA
     out.loc[marche, "odds_source"] = "market_avg_closing"
     out.loc[pinnacle, "odds_source"] = "pinnacle_closing"
+
+    # football-data écrit 0 là où la cote manque. Une cote nulle n'est pas
+    # une cote basse : elle casse tout dévig (1/0) et fabriquerait une
+    # probabilité infinie. On la ramène à « absente », ce qu'elle est.
+    for c in COLONNES_COTES:
+        if c in out.columns:
+            v = pd.to_numeric(out[c], errors="coerce")
+            out[c] = v.where(v > 1.0)
 
     out = out[out["date"].notna()]
     out = out[out["home_goals"].notna() & out["away_goals"].notna()]
@@ -172,6 +214,7 @@ def load_main(code: str, season: str) -> pd.DataFrame | None:
             "ps_h": _col(df, "PSH"), "ps_d": _col(df, "PSD"), "ps_a": _col(df, "PSA"),
             "avgc_h": _col(df, "AvgCH"), "avgc_d": _col(df, "AvgCD"), "avgc_a": _col(df, "AvgCA"),
             "maxc_h": _col(df, "MaxCH"), "maxc_d": _col(df, "MaxCD"), "maxc_a": _col(df, "MaxCA"),
+            **{cle: _col(df, col) for cle, col in COLONNES_OU.items()},
             "odds_source": pd.NA,
             "source_file": f"main/{code}_{season}",
         }

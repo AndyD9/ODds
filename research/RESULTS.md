@@ -325,3 +325,111 @@ calibration. Le pivot vers des données propriétaires reste la seule voie ouver
 et il exige un chiffrage avant tout engagement.
 
 **Coût total : une session.** Le plan initial situait ce point après six mois d'infrastructure.
+
+---
+
+## R9 — H7 : marchés de buts. D'où doivent venir les probabilités ? (2026-09-18)
+
+Question ouverte par l'extension de l'outil aux paris « 3 buts ou plus » et « telle équipe marque
+2 buts ». Aucune de ces probabilités n'est directement disponible : le marché accessible ne cote
+que le 1X2 et, sur les grands championnats depuis 2019-20, l'over/under 2,5. Les totaux **par
+équipe** sont un marché additionnel réservé aux offres payantes.
+
+Trois sources possibles, mises en concurrence (`research/h7_marches_buts.py`) :
+
+| | source | disponibilité |
+|---|---|---|
+| **marché** | cote over/under 2,5 de clôture, dévigée Shin | 43 204 matchs, grands championnats, 2019-20 → 2026-01 |
+| **implicite** | matrice de score ajustée pour reproduire les prix affichés | partout |
+| **DC** | Dixon-Coles point-in-time, réajusté en glissant | tout l'historique |
+
+Stratification obligatoire : trois régimes coexistent (1X2 seul avant 2019, 1X2 + over/under
+ensuite, Pinnacle absent après 2026-01-14), et les 16 championnats « extra » — 63 192 matchs,
+40 % de l'historique — n'ont **jamais** de cote de totaux. Aucun chiffre agrégé n'est publié ici.
+
+### H7a — Dixon-Coles apporte-t-il quelque chose sur les buts ? **REJETÉE**
+
+R5 avait rejeté « DC bat la clôture » sur le 1X2. Le résultat ne s'y transportait pas
+automatiquement : DC *est* un modèle de buts, c'est son terrain naturel, et les totaux par équipe
+n'ont aucun prix de marché à opposer au modèle. La question était donc ouverte. Elle ne l'est plus.
+
+| comparaison (Brier, bootstrap par blocs championnat-saison) | n | écart | verdict |
+|---|---|---|---|
+| marché − DC, `3 buts ou plus` | 43 204 | −0,00599 [−0,00672 ; −0,00526] | marché meilleur |
+| implicite − DC, `3 buts ou plus` | 43 204 | −0,00360 [−0,00444 ; −0,00266] | implicite meilleur |
+| implicite − DC, `domicile marque 2 buts ou plus` | 141 843 | −0,00639 [−0,00687 ; −0,00590] | implicite meilleur |
+| implicite − DC, `extérieur marque 2 buts ou plus` | 141 843 | −0,00445 [−0,00488 ; −0,00405] | implicite meilleur |
+| implicite − DC, `les deux marquent` | 141 843 | −0,00115 [−0,00158 ; −0,00069] | implicite meilleur |
+| implicite − DC, `domicile 2+`, **championnats extra seuls** | 54 377 | −0,00704 [−0,00791 ; −0,00626] | implicite meilleur |
+
+DC perd sur **tous** les marchés de buts, dans **toutes** les strates, y compris là où aucun prix
+n'existe et y compris sur les petits championnats — le terrain où H2 espérait un écart. Le modèle
+n'est donc pas proposé comme source de probabilité dans l'outil.
+
+### H7b — Ce que coûte la dérivation
+
+Là où le prix existe, on peut mesurer l'erreur commise en le dérivant plutôt qu'en le lisant.
+Sur 43 204 matchs, P(3 buts ou plus) dérivée du 1X2 seul contre P(3 buts ou plus) cotée :
+
+| | |
+|---|---|
+| corrélation | 0,946 |
+| écart absolu moyen | 4,06 points |
+| 90ᵉ centile de l'écart absolu | 7,81 points |
+| ECE — marché | **0,0074** |
+| ECE — implicite 1X2 + over/under | **0,0073** |
+| ECE — implicite 1X2 seul | 0,0366 |
+| ECE — Dixon-Coles | 0,0253 |
+
+**Une cote de totaux vaut bien plus que le marché qu'elle cote.** Contrainte par elle, la matrice
+rejoint la calibration du marché — et pas seulement sur le total du match : sur `domicile marque
+2 buts ou plus`, que personne ne cote, l'ECE passe de 0,0206 à 0,0072 ; sur `les deux marquent`,
+de 0,0429 à 0,0121. Un crédit d'API dépensé en `totals` améliore donc des marchés qu'on ne peut
+pas observer. C'est ce qui justifie `ODDS_API_MARKETS=h2h,totals`.
+
+### H7c — rho n'est pas ce qu'on croyait
+
+Premier réflexe : prendre le rho de Dixon-Coles ajusté sur les buts (médiane −0,055 sur 24 pools).
+Faux cadre. Ici rho est le degré de liberté restant une fois le 1X2 imposé, et c'est la
+calibration des marchés de buts qui doit le fixer.
+
+Balayage sur train + validation (20 000 matchs), **vérifié sur le jeu de test** (20 000 autres) :
+
+| rho | biais `3 buts ou plus` | biais `les deux marquent` | Brier `3 buts ou plus` |
+|---|---|---|---|
+| −0,05 | −3,38 pts | −4,49 pts | 0,24181 |
+| **−0,09** | **+0,26 pt** | **−1,04 pt** | **0,24070** |
+
+Mécanisme : à taux de buts réel, un produit de Poisson donne trop peu de matchs nuls ; pour
+reproduire le P(nul) du marché, l'ajustement baisse les buts. Un rho plus négatif rend les nuls
+sans sacrifier les buts.
+
+### H7d — La limite qui compte : les matchs déséquilibrés
+
+Reproduire le 1X2 ne rend pas un total crédible. Le 1X2 ne dit rien du nombre de buts ; l'écart
+grandit avec le déséquilibre du match. Mesuré sur 43 576 matchs, dont les 3 576 favoris à plus de
+80 % pris en totalité :
+
+| force du favori | n | buts impliqués | buts réels | biais sur `3 buts ou plus` |
+|---|---|---|---|---|
+| ≤ 60 % | 32 776 | 2,43 – 2,72 | 2,44 – 2,68 | **< 1 point** |
+| 60 – 70 % | 4 989 | 2,96 | 2,87 | +1,6 pt |
+| 70 – 80 % | 2 235 | 3,32 | 3,10 | +2,8 pts |
+| 80 – 85 % | 2 174 | 3,71 | 3,33 | +5,1 pts |
+| 85 – 95 % | 1 390 | 4,11 – 4,81 | 3,69 – 4,28 | +3,8 à +4,1 pts |
+| > 95 % | 12 | 6,37 | 4,83 | +10,8 pts |
+
+Le biais va **toujours dans le même sens** : la dérivation surestime les buts des matchs
+déséquilibrés. Aucune correction n'est appliquée — un rattrapage ajusté après coup sur la donnée
+qui l'a révélé serait du surajustement, pas une correction. L'usage est borné et l'incertitude
+affichée match par match. Le vrai remède est de collecter la cote de totaux.
+
+### Conséquences actées
+
+1. `ODDS_API_MARKETS=h2h,totals` — le gain mesuré justifie le doublement du coût par championnat ;
+2. source des probabilités de buts : **matrice implicite au marché**, jamais Dixon-Coles ;
+3. `rho` par défaut : **−0,09**, calibré et vérifié hors échantillon ;
+4. l'interface affiche pour chaque match si la probabilité est **calée sur un prix** ou **dérivée**,
+   avec le biais mesuré correspondant à la force du favori ;
+5. le moteur de mise divise la confiance par deux sur une probabilité dérivée (`confiance` v2,
+   prereg 0003).
