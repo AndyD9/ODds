@@ -23,7 +23,8 @@ from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
                            SEUIL_PRIME_ISOLEE, analyser_livre, avec_cloture,
                            carte_information_tardive, carte_marges, charger, cible,
                            comparer_methodes, courbe_calibration, dates_disponibles,
-                           ece, matchs_a_la_date, probabilites_marche)
+                           ece, fiabilite_historique, matchs_a_la_date,
+                           probabilites_marche)
 
 st.set_page_config(page_title="Analyse des probabilités de marché",
                    page_icon="📊", layout="wide")
@@ -211,94 +212,139 @@ if page == "Matchs par date":
     m4.metric("Dispersion médiane", f"{res.dispersion.median():.2f} pts",
               help="Écart-type de P(1) entre bookmakers. Élevé = le marché est en désaccord.")
 
-    # --- verdict ----------------------------------------------------------
-    st.subheader("Que faire de ces matchs ?")
+    # --- pronostic et confiance (section principale) -----------------------
+    st.subheader("Pronostic le plus probable et confiance")
+    st.caption("Lecture du marché, marge retirée. La colonne « réussite historique » indique "
+               "à quelle fréquence ce niveau de probabilité s'est **réellement** vérifié sur "
+               "les 150 626 matchs de l'historique. Usage descriptif et pédagogique.")
 
-    ORDRE = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
-             "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
-             "Rien à signaler": 4}
-    COULEUR = {"Écart soutenu": "🟢", "Écart isolé — prudence": "🟡",
-               "Fragile — dépend de la méthode": "🟠", "Trop peu de books": "⚪",
-               "Rien à signaler": "⚪"}
-    res = res.assign(_ordre=res.verdict.map(ORDRE).fillna(9)).sort_values(
-        ["_ordre", "kickoff"]).reset_index(drop=True)
-
-    n_sout = int((res.verdict == "Écart soutenu").sum())
-    if n_sout == 0:
-        st.info("**Aucun match ne présente d'écart de prix soutenu.** "
-                "C'est le cas le plus fréquent, et c'est le résultat attendu : "
-                "le marché est efficient.")
-    else:
-        st.success(f"**{n_sout} match(s) sur {len(res)}** présentent un écart de prix "
-                   "soutenu par plusieurs bookmakers et robuste à la méthode de dévig.")
-
-    with st.expander("Comment le verdict est calculé", expanded=(n_sout == 0)):
-        st.markdown(f"""
-Le verdict ne prédit **rien**. Il répond à une seule question : le meilleur prix
-disponible s'écarte-t-il assez du consensus des **autres** bookmakers pour ne pas être du bruit ?
-
-Trois filtres, dans cet ordre :
-
-1. **Consensus sans le book généreux.** Comparer un prix au consensus qui l'inclut est
-   circulaire : le book généreux tire la médiane vers lui et masque son propre écart. Le
-   consensus est donc recalculé **sans lui**.
-2. **Soutien.** Un prix isolé plus de {SEUIL_PRIME_ISOLEE:.0f} % au-dessus du deuxième meilleur
-   n'est presque jamais une opportunité : cote périmée, erreur, ou limite de mise dérisoire.
-3. **Robustesse à la méthode de dévig.** L'EV est recalculée sous les quatre méthodes
-   (Shin, power, odds ratio, proportionnelle). Si le **signe** ne tient pas, le chiffre ne veut
-   rien dire. C'est le filtre le plus sévère : `research/RESULTS.md` (R3) a mesuré que sous 5 %
-   de probabilité, les méthodes divergent de **16,6 % en relatif** — bien plus que les écarts
-   qu'on croit détecter sur les outsiders.
-
-| Verdict | Sens |
-|---|---|
-| 🟢 Écart soutenu | Les trois filtres passent. Le seul cas qui mérite un regard. |
-| 🟡 Écart isolé | Un seul book, ou prix très au-dessus du deuxième. Presque toujours illusoire. |
-| 🟠 Fragile | L'EV change de signe selon la méthode de dévig. Le chiffre n'est pas interprétable. |
-| ⚪ Rien à signaler | Écart sous {SEUIL_EV_MINI:.0f} %, ou moins de {N_BOOKS_MINI} bookmakers. |
-
-**Même un 🟢 n'est pas une recommandation de pari.** C'est un écart de prix entre opérateurs à un
-instant. Il reste à vérifier la limite de mise, et le fait que `research/RESULTS.md` a établi
-qu'aucun modèle sur données publiques ne bat le marché.
-""")
-
-    st.subheader("Matchs du jour")
+    NIV_ICONE = {"Très élevée": "🟢", "Élevée": "🔵", "Modérée": "🟡",
+                 "Faible": "🟠", "Très faible": "🔴"}
     lib = {"1": "Domicile", "N": "Nul", "2": "Extérieur"}
+    a_confiance = "confiance" in res.columns
 
-    def nom_book(b):
-        return {"_max_marche": "⌀ meilleur du marché",
-                "_moyenne_marche": "⌀ moyenne marché"}.get(b, b)
+    if a_confiance:
+        res = res.sort_values("p_probable", ascending=False).reset_index(drop=True)
+        issue_txt = [
+            {"1": r.home_team, "N": "Match nul", "2": r.away_team}[r.issue_probable]
+            for _, r in res.iterrows()]
+        prono = pd.DataFrame({
+            "": res.confiance.map(NIV_ICONE),
+            "Confiance": res.confiance,
+            "Heure": res.kickoff.str[11:16],
+            "Match": res.home_team + " – " + res.away_team,
+            "Pronostic": issue_txt,
+            "Issue": res.issue_probable.map(lib),
+            "Marché %": 100 * res.p_probable,
+            "Réussite hist. %": 100 * res.reussite_hist,
+            "± pts": 100 * res.ic95_hist,
+            "Échec hist. %": 100 * res.echoue_hist,
+            "n hist.": res.n_hist,
+            "Books": res.n_books,
+        })
+        if historique and "score" in res.columns:
+            prono.insert(5, "Score", res.score.to_numpy())
+            prono.insert(6, "Résultat", res.resultat.map(
+                {"H": "Domicile", "D": "Nul", "A": "Extérieur"}).to_numpy())
+            prono.insert(7, "Vu juste", np.where(
+                res.resultat.map({"H": "1", "D": "N", "A": "2"}) == res.issue_probable,
+                "✅", "❌"))
 
-    vue = pd.DataFrame({
-        "": res.verdict.map(COULEUR),
-        "Verdict": res.verdict,
-        "Heure": res.kickoff.str[11:16],
-        "Champ.": res.league.astype(str),
-        "Domicile": res.home_team, "Extérieur": res.away_team,
-        "Marché juge": res.issue_probable.map(lib),
-        "Prob. %": 100 * res.p_probable,
-        "Issue visée": res.issue_prix.map(lib),
-        "Cote": res.cote_prix,
-        "Chez": res.book_prix.map(nom_book),
-        "EV %": res.ecart_prix,
-        "EV min %": res.ev_min, "EV max %": res.ev_max,
-        "Books au prix": res.soutien_prix,
-        "Books": res.n_books,
-    })
-    if historique and "score" in res.columns:
-        vue.insert(6, "Score", res.score.to_numpy())
-        vue.insert(7, "Rés.", res.resultat.map(
-            {"H": "Domicile", "D": "Nul", "A": "Extérieur"}).to_numpy())
+        st.dataframe(
+            prono.style.format({"Marché %": "{:.1f}", "Réussite hist. %": "{:.1f}",
+                                "± pts": "{:.1f}", "Échec hist. %": "{:.1f}",
+                                "n hist.": "{:,}"})
+                 .background_gradient(cmap="RdYlGn", subset=["Marché %"], vmin=33, vmax=95),
+            use_container_width=True, hide_index=True,
+            height=min(520, 44 + 36 * len(prono)))
 
-    st.dataframe(
-        vue.style.format({"Prob. %": "{:.1f}", "Cote": "{:.2f}",
-                          "EV %": "{:+.2f}", "EV min %": "{:+.2f}", "EV max %": "{:+.2f}"})
-           .background_gradient(cmap="RdYlGn", subset=["EV min %"], vmin=-3, vmax=3),
-        use_container_width=True, hide_index=True, height=min(560, 44 + 36 * len(vue)))
+        meilleur = res.iloc[0]
+        nom = {"1": meilleur.home_team, "N": "le match nul",
+               "2": meilleur.away_team}[meilleur.issue_probable]
+        st.info(
+            f"**Le pronostic le plus sûr du jour : {nom}** "
+            f"({meilleur.home_team} – {meilleur.away_team}), donné à "
+            f"{100 * meilleur.p_probable:.1f} % par le marché. "
+            f"Historiquement, ce niveau se vérifie **{100 * meilleur.reussite_hist:.1f} %** "
+            f"du temps (n = {meilleur.n_hist:,}) — donc il échoue quand même "
+            f"**{100 * meilleur.echoue_hist:.1f} %** des fois.")
 
-    st.caption("**EV min / EV max** = espérance sous la méthode de dévig la plus défavorable et "
-               "la plus favorable. Si EV min est négative, l'écart n'est pas interprétable. "
-               "**Books au prix** = nombre de bookmakers à moins de 1 % du meilleur prix.")
+        with st.expander("D'où vient le score de confiance"):
+            st.markdown("""
+Le score n'est pas une estimation : il est **mesuré** sur les 150 626 matchs de l'historique à
+clôture Pinnacle. Pour chaque tranche de probabilité, on compte à quelle fréquence l'issue la
+plus probable s'est réellement produite.
+
+Deux enseignements de cette mesure :
+
+- **Le marché est remarquablement calibré.** L'écart entre probabilité annoncée et fréquence
+  observée ne dépasse jamais 2,2 points, sur aucune tranche.
+- **Le favori du marché ne l'emporte que 50,4 % du temps**, toutes tranches confondues. « Le plus
+  probable » est très loin de « probable ».
+""")
+            tbl = fiabilite_historique()
+            ch = alt.Chart(tbl.assign(annonce=100 * tbl.p_moyenne,
+                                      observe=100 * tbl.reussite)).mark_circle(
+                size=120, color="#2563eb").encode(
+                x=alt.X("annonce:Q", title="Probabilité annoncée (%)"),
+                y=alt.Y("observe:Q", title="Réussite observée (%)"),
+                size=alt.Size("n:Q", legend=None),
+                tooltip=[alt.Tooltip("annonce:Q", format=".1f"),
+                         alt.Tooltip("observe:Q", format=".1f"),
+                         alt.Tooltip("n:Q", title="n")])
+            diag = alt.Chart(pd.DataFrame({"x": [33, 95]})).mark_line(
+                strokeDash=[6, 4], color="#94a3b8").encode(x="x:Q", y="x:Q")
+            st.altair_chart((diag + ch).properties(height=300), use_container_width=True)
+            st.dataframe(
+                tbl.assign(p_moyenne=100 * tbl.p_moyenne, reussite=100 * tbl.reussite,
+                           ic95=100 * tbl.ic95)[["bin", "n", "p_moyenne", "reussite", "ic95"]]
+                   .rename(columns={"bin": "Tranche", "p_moyenne": "Annoncé %",
+                                    "reussite": "Observé %", "ic95": "± pts"})
+                   .style.format({"Annoncé %": "{:.1f}", "Observé %": "{:.1f}",
+                                  "± pts": "{:.1f}", "n": "{:,}"}),
+                use_container_width=True, hide_index=True)
+    else:
+        st.warning("Historique indisponible : le score de confiance ne peut pas être calculé. "
+                   "Lancez `uv run odds ingest`.")
+
+    # --- dispersion des prix (section secondaire) --------------------------
+    st.divider()
+    with st.expander("Dispersion des prix entre bookmakers (analyse secondaire)"):
+        st.caption("Où le meilleur prix disponible s'écarte-t-il du consensus des autres "
+                   "bookmakers ? C'est une observation sur le **désaccord entre opérateurs**, "
+                   "sans rapport avec la probabilité qu'une issue se produise.")
+
+        ORDRE = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
+                 "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
+                 "Rien à signaler": 4}
+        COULEUR = {"Écart soutenu": "🟢", "Écart isolé — prudence": "🟡",
+                   "Fragile — dépend de la méthode": "🟠", "Trop peu de books": "⚪",
+                   "Rien à signaler": "⚪"}
+
+        def nom_book(b):
+            return {"_max_marche": "⌀ meilleur du marché",
+                    "_moyenne_marche": "⌀ moyenne marché"}.get(b, b)
+
+        rp = res.assign(_o=res.verdict.map(ORDRE).fillna(9)).sort_values(
+            ["_o", "kickoff"]).reset_index(drop=True)
+        st.dataframe(pd.DataFrame({
+            "": rp.verdict.map(COULEUR), "Constat": rp.verdict,
+            "Match": rp.home_team + " – " + rp.away_team,
+            "Issue visée": rp.issue_prix.map(lib),
+            "Cote": rp.cote_prix, "Chez": rp.book_prix.map(nom_book),
+            "Écart %": rp.ecart_prix,
+            "min %": rp.ev_min, "max %": rp.ev_max,
+            "Books au prix": rp.soutien_prix,
+        }).style.format({"Cote": "{:.2f}", "Écart %": "{:+.2f}",
+                         "min %": "{:+.2f}", "max %": "{:+.2f}"}),
+            use_container_width=True, hide_index=True)
+
+        st.markdown("""
+**min % / max %** encadrent l'écart selon la méthode de dévig retenue (Shin, power, odds ratio,
+proportionnelle). Quand le signe change entre les deux, le chiffre mesure le choix de méthode et
+non le marché — c'est systématiquement le cas sur les issues à faible probabilité, où
+`research/RESULTS.md` (R3) a mesuré 16,6 % de divergence relative entre méthodes.
+""")
 
     st.divider()
     st.subheader("Détail d'un match")
@@ -308,41 +354,48 @@ qu'aucun modèle sur données publiques ne bat le marché.
     ligne = res.loc[libelles == choix].iloc[0]
     fk = ligne.fixture_key
 
-    st.markdown(f"### {COULEUR.get(ligne.verdict, '')} {ligne.verdict}")
+    nom_prono = {"1": ligne.home_team, "N": "Match nul",
+                 "2": ligne.away_team}[ligne.issue_probable]
+    if a_confiance:
+        st.markdown(f"### {NIV_ICONE.get(ligne.confiance, '')} Pronostic : **{nom_prono}** "
+                    f"· confiance {ligne.confiance.lower()}")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Probabilité de marché", f"{100 * ligne.p_probable:.1f} %",
+                  lib[ligne.issue_probable], delta_color="off")
+        d2.metric("Réussite historique", f"{100 * ligne.reussite_hist:.1f} %",
+                  f"± {100 * ligne.ic95_hist:.1f} pts", delta_color="off")
+        d3.metric("Échoue quand même", f"{100 * ligne.echoue_hist:.1f} %",
+                  "du temps", delta_color="off")
+        d4.metric("Échantillon", f"{ligne.n_hist:,}", "matchs historiques",
+                  delta_color="off")
+        st.caption("La réussite historique est mesurée sur les matchs de l'historique dont la "
+                   "probabilité annoncée tombait dans la même tranche. Elle n'est pas propre à "
+                   "ce match : elle dit ce que vaut, en moyenne, un pronostic à ce niveau.")
+    else:
+        st.markdown(f"### Pronostic : **{nom_prono}** "
+                    f"({100 * ligne.p_probable:.1f} %)")
 
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Marché juge le plus probable", lib[ligne.issue_probable],
-              f"{100 * ligne.p_probable:.1f} %", delta_color="off")
-    d2.metric("Issue visée par le prix", lib[ligne.issue_prix],
-              f"{ligne.ecart_prix:+.2f} % d'EV", delta_color="normal")
-    d3.metric("Meilleure cote", f"{ligne.cote_prix:.2f}",
-              nom_book(ligne.book_prix), delta_color="off")
-    d4.metric("EV selon la méthode",
-              f"{ligne.ev_min:+.1f} → {ligne.ev_max:+.1f} %",
-              "robuste" if ligne.ev_robuste else "change de signe",
-              delta_color="normal" if ligne.ev_robuste else "inverse")
-
-    if str(ligne.book_prix).startswith("_"):
-        st.caption("⌀ = agrégat de marché, pas un bookmaker : cette cote indique le meilleur "
-                   "prix constaté, sans dire chez qui. Voir le tableau livre par livre.")
-
-    if not ligne.ev_robuste:
-        st.error(f"**L'EV change de signe selon la méthode de dévig** "
-                 f"({ligne.ev_min:+.1f} % à {ligne.ev_max:+.1f} %). Le chiffre affiché n'est "
-                 "pas interprétable : il mesure surtout le choix de méthode, pas le marché. "
-                 "C'est le cas typique des issues à faible probabilité.")
-    elif ligne.verdict == "Écart isolé — prudence":
-        st.warning(f"Le meilleur prix est {ligne.prime_prix:+.1f} % au-dessus du deuxième, "
-                   f"et seuls {int(ligne.soutien_prix)} bookmaker(s) l'affichent. Un prix isolé "
-                   "est presque toujours une cote périmée, une erreur, ou assortie d'une limite "
-                   "de mise dérisoire.")
-    elif ligne.verdict == "Écart soutenu":
-        st.success(f"Écart soutenu par {int(ligne.soutien_prix)} bookmakers et robuste aux "
-                   "quatre méthodes de dévig. C'est le seul cas qui mérite un regard — "
-                   "vérifiez la limite de mise avant toute chose.")
-    if not ligne.accord:
-        st.caption("Le prix vise une issue que le marché juge moins probable. Regardez dans le "
-                   "tableau ci-dessous si un seul bookmaker est à l'origine de l'écart.")
+    with st.expander("Dispersion des prix sur ce match"):
+        e1, e2, e3 = st.columns(3)
+        e1.metric("Issue visée par le prix", lib[ligne.issue_prix],
+                  f"{ligne.ecart_prix:+.2f} %", delta_color="off")
+        e2.metric("Meilleure cote", f"{ligne.cote_prix:.2f}",
+                  nom_book(ligne.book_prix), delta_color="off")
+        e3.metric("Selon la méthode", f"{ligne.ev_min:+.1f} → {ligne.ev_max:+.1f} %",
+                  "stable" if ligne.ev_robuste else "change de signe",
+                  delta_color="normal" if ligne.ev_robuste else "inverse")
+        if str(ligne.book_prix).startswith("_"):
+            st.caption("⌀ = agrégat de marché, pas un bookmaker. Voir le tableau livre par livre.")
+        if not ligne.ev_robuste:
+            st.error("L'écart change de signe selon la méthode de dévig : il mesure le choix "
+                     "de méthode, pas le marché. Typique des issues à faible probabilité.")
+        elif ligne.verdict == "Écart isolé — prudence":
+            st.warning(f"Prix {ligne.prime_prix:+.1f} % au-dessus du deuxième, affiché par "
+                       f"{int(ligne.soutien_prix)} bookmaker(s) seulement — presque toujours "
+                       "une cote périmée ou erronée.")
+        elif ligne.verdict == "Écart soutenu":
+            st.success(f"Écart soutenu par {int(ligne.soutien_prix)} bookmakers et stable sur "
+                       "les quatre méthodes de dévig.")
     d = det[det.fixture_key == fk].copy()
     d["type"] = np.where(d.bookmaker.isin(AGREGATS), "agrégat",
                 np.where(d.bookmaker.isin(AUTRE_INSTANT), "autre instant", "book"))

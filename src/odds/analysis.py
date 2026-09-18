@@ -423,6 +423,12 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     cons["verdict"] = [_verdict(r) for _, r in cons.iterrows()]
 
     cons = cons.sort_values("kickoff").reset_index(drop=True)
+    try:
+        cons = annoter_confiance(cons, methode)
+    except FileNotFoundError:
+        # L'historique peut légitimement manquer (installation neuve). Toute
+        # AUTRE erreur doit remonter : un except nu masquerait un bug.
+        pass
     return {"source": source, "fournisseur": fournisseur,
             "resume": cons, "detail": detail}
 
@@ -497,3 +503,92 @@ def dates_disponibles() -> dict:
     df = charger()
     out["historique"] = (df.date.min().date(), df.date.max().date())
     return out
+
+
+# --------------------------------------------------------------------------
+# Score de confiance — fondé sur la fiabilité MESURÉE, pas estimée
+# --------------------------------------------------------------------------
+# Nous disposons de 150 626 matchs historiques avec le résultat réel. La
+# question « à quel point ce pronostic est-il sûr ? » n'a donc pas à être
+# devinée : on mesure, sur ces matchs, à quelle fréquence l'issue annoncée à
+# p % s'est réellement produite.
+#
+# Usage strictement descriptif et pédagogique. Rien ici ne recommande de
+# miser quoi que ce soit.
+
+BORNES_CONFIANCE = [0.0, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65,
+                    0.70, 0.75, 0.80, 0.85, 0.90, 1.01]
+
+NIVEAUX = [
+    (0.85, "Très élevée"),
+    (0.70, "Élevée"),
+    (0.60, "Modérée"),
+    (0.50, "Faible"),
+    (0.00, "Très faible"),
+]
+
+
+@lru_cache(maxsize=4)
+def fiabilite_historique(methode: str = "shin") -> pd.DataFrame:
+    """Fréquence réelle de l'issue la plus probable, par tranche.
+
+    Calculée sur l'ensemble de l'historique à clôture Pinnacle. C'est la
+    table qui transforme une probabilité affichée en taux de réussite
+    observé, avec sa taille d'échantillon et son intervalle de confiance.
+    """
+    d = avec_cloture(charger())
+    y = cible(d)
+    p = probabilites_marche(d, "psc", methode)
+    lig = np.arange(len(p))
+    j = p.argmax(axis=1)
+    p_max, touche = p[lig, j], y[lig, j]
+
+    t = (pd.DataFrame({"p": p_max, "ok": touche,
+                       "bin": pd.cut(p_max, BORNES_CONFIANCE)})
+           .groupby("bin", observed=True)
+           .agg(n=("p", "size"), p_moyenne=("p", "mean"), reussite=("ok", "mean"))
+           .reset_index())
+    t["ic95"] = 1.96 * np.sqrt(t.reussite * (1 - t.reussite) / t.n)
+    # .apply sur une colonne catégorielle renvoie du catégoriel : sans le
+    # cast, toute comparaison numérique lève.
+    t["borne_inf"] = t.bin.apply(lambda b: b.left).astype(float)
+    t["borne_sup"] = t.bin.apply(lambda b: b.right).astype(float)
+    t["bin"] = t.bin.astype(str)
+    return t
+
+
+def _niveau(p: float) -> str:
+    for seuil, nom in NIVEAUX:
+        if p >= seuil:
+            return nom
+    return NIVEAUX[-1][1]
+
+
+def annoter_confiance(res: pd.DataFrame, methode: str = "shin") -> pd.DataFrame:
+    """Ajoute le score de confiance du pronostic le plus probable.
+
+    Colonnes ajoutées :
+      confiance        niveau qualitatif
+      reussite_hist    fréquence réelle observée à ce niveau de probabilité
+      n_hist           taille de l'échantillon derrière cette fréquence
+      ic95_hist        demi-largeur de l'intervalle de confiance à 95 %
+      echoue_hist      fréquence d'échec — la moitié qu'on oublie de regarder
+    """
+    if len(res) == 0:
+        return res
+    table = fiabilite_historique(methode)
+    out = []
+    for p in res.p_probable:
+        ligne = table[(table.borne_inf < p) & (p <= table.borne_sup)]
+        if len(ligne) == 0:
+            ligne = table.iloc[[-1]] if p > table.borne_sup.max() else table.iloc[[0]]
+        r = ligne.iloc[0]
+        out.append({
+            "confiance": _niveau(float(p)),
+            "reussite_hist": float(r.reussite),
+            "n_hist": int(r.n),
+            "ic95_hist": float(r.ic95),
+            "echoue_hist": 1.0 - float(r.reussite),
+        })
+    return pd.concat([res.reset_index(drop=True),
+                      pd.DataFrame(out)], axis=1)

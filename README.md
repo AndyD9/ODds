@@ -106,39 +106,53 @@ prend la publication suivante automatiquement.
 Pour une couverture quotidienne réelle, il faut une API de cotes dédiée — c'est l'option B de
 [`PLAN.md`](PLAN.md) §7.2, explicitement différée après le rejet de H1.
 
-#### « Quelle issue choisir ? » — le verdict
+#### Pronostic et score de confiance
 
-L'outil rend un **verdict unique par match**, pas deux chiffres à arbitrer soi-même. Il ne prédit
-rien : il répond à une seule question — le meilleur prix disponible s'écarte-t-il assez du
-consensus des **autres** bookmakers pour ne pas être du bruit ?
+Pour chaque match, l'issue que le marché juge la plus probable, **avec la fiabilité mesurée de
+ce niveau de probabilité**. Le score n'est pas une estimation : il est calculé sur les 150 626
+matchs de l'historique à clôture Pinnacle, en comptant à quelle fréquence l'issue la plus
+probable s'est réellement produite.
 
-Trois filtres, dans cet ordre :
+```text
+Tranche annoncée   Réussite observée   n
+   37,5 %               36,8 %       31 613
+   42,4 %               42,8 %       30 749
+   52,4 %               52,3 %       18 538
+   62,3 %               62,5 %       10 505
+   72,3 %               74,5 %        5 028
+   82,2 %               83,6 %        2 174
+   91,9 %               93,4 %          317
+```
 
-1. **Consensus sans le book généreux (leave-one-out).** Comparer un prix à un consensus qui
-   l'inclut est circulaire : le book généreux tire la médiane vers lui et masque son propre
-   écart.
-2. **Soutien.** Un prix isolé plus de 2 % au-dessus du deuxième meilleur n'est presque jamais une
-   opportunité : cote périmée, erreur, ou limite de mise dérisoire.
-3. **Robustesse à la méthode de dévig.** L'EV est recalculée sous les quatre méthodes. Si le
-   **signe** ne tient pas, le chiffre ne veut rien dire.
+Deux enseignements, tous deux mesurés :
 
-| Verdict | Sens |
-|---|---|
-| 🟢 Écart soutenu | Les trois filtres passent. Le seul cas qui mérite un regard. |
-| 🟡 Écart isolé | Un seul book, ou prix très au-dessus du deuxième. Presque toujours illusoire. |
-| 🟠 Fragile | L'EV change de signe selon la méthode de dévig. Non interprétable. |
-| ⚪ Rien à signaler | Écart sous 1 %, ou moins de 6 bookmakers. |
+- **Le marché est remarquablement calibré.** L'écart entre probabilité annoncée et fréquence
+  observée ne dépasse 2,2 points sur aucune tranche.
+- **Le favori du marché ne l'emporte que 50,4 % du temps**, toutes tranches confondues. « Le plus
+  probable » est très loin de « probable ».
 
-Le filtre 3 est le plus sévère, et c'est celui qui manquait. Exemple réel du 2026-09-18,
-Bayern Munich – Union Berlin : le nul à la cote 23,00 affichait **+6,9 % d'EV**. Recalculé sous
-les quatre méthodes, il va de **−16,8 % à +29,4 %**. Le chiffre mesurait le choix de méthode, pas
-le marché. C'est la conséquence directe de R3 : sous 5 % de probabilité, les méthodes de dévig
-divergent de 16,6 % en relatif — bien plus que les écarts qu'on croit détecter sur les outsiders.
+| Niveau | Probabilité | Ce que ça vaut en pratique |
+|---|---|---|
+| 🟢 Très élevée | ≥ 85 % | se vérifie ~89–93 % du temps |
+| 🔵 Élevée | 70–85 % | ~74–84 % |
+| 🟡 Modérée | 60–70 % | ~62–68 % |
+| 🟠 Faible | 50–60 % | ~52–58 % |
+| 🔴 Très faible | < 50 % | l'issue la plus probable reste minoritaire |
 
-Ce jour-là, 2 matchs sur 5 passaient les trois filtres.
+Chaque ligne affiche aussi le **taux d'échec** : même un pronostic « très élevée » se trompe
+environ 7 % du temps. Sur une date passée, une colonne indique si le pronostic s'est vérifié.
 
-**Même un 🟢 n'est pas une recommandation de pari.** C'est un écart de prix entre opérateurs à un
-instant, et il reste à vérifier la limite de mise.
+#### Dispersion des prix (analyse secondaire)
+
+En annexe, l'outil montre où le meilleur prix disponible s'écarte du consensus des **autres**
+bookmakers — une observation sur le désaccord entre opérateurs, sans rapport avec la probabilité
+qu'une issue se produise. Trois filtres : consensus recalculé sans le book généreux, écart au
+deuxième meilleur prix, et robustesse aux quatre méthodes de dévig.
+
+Ce dernier filtre est le plus instructif. Le 2026-09-18, Bayern Munich – Union Berlin : le nul à
+la cote 23,00 affichait +6,9 % d'écart. Recalculé sous les quatre méthodes, il va de −16,8 % à
++29,4 %. Le chiffre mesurait le choix de méthode, pas le marché — conséquence directe de R3, où
+les méthodes divergent de 16,6 % en relatif sous 5 % de probabilité.
 
 Un `⌀` devant un nom indique un **agrégat de marché**, pas un bookmaker : la cote existe quelque
 part, mais il faut consulter le tableau livre par livre pour savoir chez qui.
@@ -270,7 +284,7 @@ src/odds/
 app/dashboard.py             tableau de bord Streamlit
 prereg/                      hypothèses pré-enregistrées, datées, avec leurs verdicts
 research/RESULTS.md          journal des résultats mesurés
-tests/                       192 tests, dont le test anti-fuite
+tests/                       209 tests, dont le test anti-fuite
 ```
 
 ## Tests
