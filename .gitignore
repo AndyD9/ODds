@@ -1,0 +1,9 @@
+research/data/
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.pytest_cache/
+logs/
+.env
+.env.local
