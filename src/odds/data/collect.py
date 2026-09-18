@@ -57,6 +57,8 @@ BOOKMAKERS = {
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS odds_snapshot (
     fixture_key  TEXT    NOT NULL,
+    source       TEXT,
+    book_updated_at TEXT,
     country      TEXT,
     league       TEXT,
     kickoff      TEXT,
@@ -79,7 +81,9 @@ CREATE TABLE IF NOT EXISTS collecte_run (
     matchs       INTEGER,
     lignes_vues  INTEGER,
     lignes_ecrites INTEGER,
-    erreur       TEXT
+    erreur       TEXT,
+    credits_utilises INTEGER DEFAULT 0,
+    credits_restants INTEGER
 );
 
 -- Fraîcheur des flux amont. football-data ne publie ses fixtures que par
@@ -96,11 +100,30 @@ CREATE TABLE IF NOT EXISTS flux_etat (
 """
 
 
+# Colonnes ajoutées après la première mise en service. SQLite n'a pas de
+# "ADD COLUMN IF NOT EXISTS" : on compare au schéma existant.
+MIGRATIONS = {
+    "odds_snapshot": {"source": "TEXT", "book_updated_at": "TEXT"},
+    "collecte_run": {"credits_utilises": "INTEGER DEFAULT 0",
+                     "credits_restants": "INTEGER"},
+}
+
+
+def _migrer(con: sqlite3.Connection) -> None:
+    for table, colonnes in MIGRATIONS.items():
+        existantes = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for nom, typ in colonnes.items():
+            if nom not in existantes:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {nom} {typ}")
+    con.commit()
+
+
 def _connexion(chemin: Path | None = None) -> sqlite3.Connection:
     p = chemin or BASE_DONNEES
     p.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(p)
     con.executescript(SCHEMA)
+    _migrer(con)
     return con
 
 
@@ -190,6 +213,91 @@ def _normaliser(d: pd.DataFrame, flux: str) -> pd.DataFrame:
     return out
 
 
+COLONNES_SNAPSHOT = ["fixture_key", "source", "country", "league", "kickoff",
+                     "home_team", "away_team", "bookmaker", "market", "selection",
+                     "odds", "book_updated_at", "observed_at", "run_id"]
+
+
+def credits_utilises_aujourdhui(con: sqlite3.Connection) -> int:
+    """Crédits The Odds API déjà consommés depuis minuit UTC."""
+    jour = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    r = con.execute(
+        "SELECT COALESCE(SUM(credits_utilises), 0) FROM collecte_run "
+        "WHERE substr(demarre_a, 1, 10) = ?", (jour,)).fetchone()
+    return int(r[0] or 0)
+
+
+def _collecter_oddsapi(con, observed_at, run_id, connu, verbose):
+    """Passe The Odds API, sous contrainte de budget.
+
+    Le plan est établi avec ``/events``, GRATUIT : on ne dépense un crédit
+    que sur un championnat qui joue réellement dans les 36 h.
+    """
+    from odds import config
+    from odds.data import oddsapi
+
+    sports = config.get_liste("ODDS_API_SPORTS")
+    regions = config.get("ODDS_API_REGIONS") or "eu"
+    markets = config.get("ODDS_API_MARKETS") or "h2h"
+    budget = int(config.get("ODDS_API_BUDGET_JOUR") or 14)
+    cout_unitaire = max(1, len(markets.split(","))) * max(1, len(regions.split(",")))
+
+    deja = credits_utilises_aujourdhui(con)
+    dispo = max(0, budget - deja)
+    if dispo < cout_unitaire:
+        if verbose:
+            print(f"  oddsapi  budget du jour épuisé ({deja}/{budget} crédits) — passe ignorée")
+        return 0, 0, 0, None, []
+
+    plan = oddsapi.championnats_avec_matchs(sports, heures=36)   # gratuit
+    candidats = plan[plan.n_proches > 0].sport.tolist()
+    retenus = candidats[: dispo // cout_unitaire]
+    if verbose:
+        print(f"  oddsapi  {len(candidats)}/{len(sports)} championnats jouent sous 36 h ; "
+              f"budget {deja}/{budget} -> {len(retenus)} interrogé(s)")
+    if not retenus:
+        return 0, 0, 0, None, []
+
+    vues = ecrites = credits = 0
+    restants = None
+    erreurs = []
+    for sport in retenus:
+        try:
+            d, entetes = oddsapi.cotes(sport, regions=regions, markets=markets)
+        except Exception as e:
+            erreurs.append(f"oddsapi/{sport}: {e}")
+            if verbose:
+                print(f"           {sport:32s} ERREUR {e}")
+            continue
+        credits += int(entetes.get("cout") or cout_unitaire)
+        restants = entetes.get("restants")
+        if len(d) == 0:
+            continue
+
+        d["fixture_key"] = "oa:" + d.event_id
+        d["country"] = pd.NA
+        d["league"] = d.sport
+        d["observed_at"] = observed_at
+        d["run_id"] = run_id
+        d["source"] = "odds-api"
+
+        change = [
+            connu.get((k, b, m, sl)) != o
+            for k, b, m, sl, o in
+            zip(d.fixture_key, d.bookmaker, d.market, d.selection, d.odds)
+        ]
+        nouveau = d[change]
+        if len(nouveau):
+            nouveau[COLONNES_SNAPSHOT].to_sql("odds_snapshot", con,
+                                              if_exists="append", index=False)
+        vues += len(d)
+        ecrites += len(nouveau)
+        if verbose:
+            print(f"           {sport:32s} {d.fixture_key.nunique():3d} matchs · "
+                  f"{len(d):5d} cotes · {len(nouveau):5d} écrites")
+    return vues, ecrites, credits, restants, erreurs
+
+
 def _derniere_cote(con: sqlite3.Connection) -> dict:
     """Dernière cote connue par (match, book, marché, sélection)."""
     q = """
@@ -248,10 +356,9 @@ def collecter(chemin_bdd: Path | None = None, verbose: bool = True) -> dict:
             zip(d.fixture_key, d.bookmaker, d.market, d.selection, d.odds)
         ]
         nouveau = d[change]
+        nouveau = nouveau.assign(source="football-data", book_updated_at=pd.NA)
         if len(nouveau):
-            nouveau[["fixture_key", "country", "league", "kickoff", "home_team",
-                     "away_team", "bookmaker", "market", "selection", "odds",
-                     "observed_at", "run_id"]].to_sql(
+            nouveau[COLONNES_SNAPSHOT].to_sql(
                 "odds_snapshot", con, if_exists="append", index=False)
         total_ecrit += len(nouveau)
         if verbose:
@@ -259,15 +366,39 @@ def collecter(chemin_bdd: Path | None = None, verbose: bool = True) -> dict:
                   f"{len(d):5d} cotes vues · {len(nouveau):5d} écrites "
                   f"({len(d)-len(nouveau)} inchangées)")
 
+    # --- The Odds API, si configurée --------------------------------------
+    credits = 0
+    restants = None
+    from odds import config
+    if config.est_configure("ODDS_API_KEY"):
+        try:
+            v, e, credits, restants, errs = _collecter_oddsapi(
+                con, observed_at, run_id, connu, verbose)
+            total_vu += v
+            total_ecrit += e
+            erreurs.extend(errs)
+        except Exception as exc:
+            erreurs.append(f"oddsapi: {exc}")
+            if verbose:
+                print(f"  oddsapi  ERREUR {exc}")
+    elif verbose:
+        print("  oddsapi  non configurée (uv run odds config --init)")
+
+    n_matchs = con.execute("SELECT COUNT(DISTINCT fixture_key) FROM odds_snapshot "
+                           "WHERE run_id = ?", (run_id,)).fetchone()[0]
     con.execute(
-        "INSERT INTO collecte_run VALUES (?,?,?,?,?,?,?)",
-        (run_id, observed_at, ",".join(FLUX), len(matchs), total_vu, total_ecrit,
-         "; ".join(erreurs) or None),
+        "INSERT INTO collecte_run (run_id, demarre_a, flux, matchs, lignes_vues, "
+        "lignes_ecrites, erreur, credits_utilises, credits_restants) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (run_id, observed_at, ",".join(FLUX), max(len(matchs), n_matchs),
+         total_vu, total_ecrit, "; ".join(erreurs) or None, credits,
+         int(restants) if restants else None),
     )
     con.commit()
     con.close()
     return {"run_id": run_id, "observed_at": observed_at, "matchs": len(matchs),
-            "vues": total_vu, "ecrites": total_ecrit, "erreurs": erreurs}
+            "vues": total_vu, "ecrites": total_ecrit, "erreurs": erreurs,
+            "credits": credits, "credits_restants": restants}
 
 
 def etat_flux(chemin_bdd: Path | None = None) -> pd.DataFrame:

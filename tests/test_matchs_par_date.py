@@ -19,11 +19,10 @@ from odds.analysis import AGREGATS, AUTRE_INSTANT, HORS_CONSENSUS
 def bdd(tmp_path, monkeypatch):
     """Base de collecte minimale : 1 match, 3 books + 2 agrégats."""
     p = tmp_path / "c.db"
-    con = sqlite3.connect(p)
-    con.execute("""CREATE TABLE odds_snapshot (
-        fixture_key TEXT, country TEXT, league TEXT, kickoff TEXT,
-        home_team TEXT, away_team TEXT, bookmaker TEXT, market TEXT,
-        selection TEXT, odds REAL, observed_at TEXT, run_id TEXT)""")
+    # On passe par le schéma de PRODUCTION plutôt que d'en figer une copie :
+    # une copie diverge silencieusement dès qu'une colonne est ajoutée.
+    from odds.data.collect import _connexion
+    con = _connexion(p)
     lignes = []
     livres = {
         "bet365": (2.00, 3.40, 4.00),
@@ -34,16 +33,37 @@ def bdd(tmp_path, monkeypatch):
     }
     for book, (h, d, a) in livres.items():
         for sel, o in (("home", h), ("draw", d), ("away", a)):
-            lignes.append(("fk1", "Spain", "SP1", "2026-10-01 20:00", "Betis",
-                           "Getafe", book, "1X2", sel, o, "2026-09-30 10:00", "r1"))
+            lignes.append(("fk1", "odds-api", "Spain", "SP1", "2026-10-01 20:00",
+                           "Betis", "Getafe", book, "1X2", sel, o, "2026-09-30 10:00", "r1"))
             # une observation ANTÉRIEURE, qui ne doit jamais être retenue
-            lignes.append(("fk1", "Spain", "SP1", "2026-10-01 20:00", "Betis",
-                           "Getafe", book, "1X2", sel, o * 1.5, "2026-09-29 10:00", "r0"))
-    con.executemany("INSERT INTO odds_snapshot VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", lignes)
+            lignes.append(("fk1", "odds-api", "Spain", "SP1", "2026-10-01 20:00",
+                           "Betis", "Getafe", book, "1X2", sel, o * 1.5, "2026-09-29 10:00", "r0"))
+    con.executemany(
+        "INSERT INTO odds_snapshot (fixture_key, source, country, league, kickoff, "
+        "home_team, away_team, bookmaker, market, selection, odds, observed_at, run_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", lignes)
     con.commit()
     con.close()
     monkeypatch.setattr(ana, "BDD_COLLECTE", p)
     return p
+
+
+def test_preference_odds_api_sur_football_data(bdd):
+    """Quand les deux sources couvrent la même date, on ne mélange pas :
+    les noms d'équipe diffèrent et un appariement approximatif créerait des
+    doublons. The Odds API l'emporte (continue, ~24 books, Pinnacle)."""
+    import sqlite3 as sq
+    con = sq.connect(bdd)
+    con.execute(
+        "INSERT INTO odds_snapshot (fixture_key, source, country, league, kickoff, "
+        "home_team, away_team, bookmaker, market, selection, odds, observed_at, run_id) "
+        "VALUES ('fd1','football-data','Spain','SP1','2026-10-01 20:00','Betis',"
+        "'Getafe','bet365','1X2','home',9.99,'2026-09-30 11:00','r2')")
+    con.commit(); con.close()
+
+    r = ana.matchs_a_la_date("2026-10-01")
+    assert set(r["detail"].fixture_key) == {"fk1"}, "les deux sources ont été mélangées"
+    assert 9.99 not in set(r["detail"].cote_1)
 
 
 def test_constantes_coherentes():

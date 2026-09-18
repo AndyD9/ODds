@@ -156,11 +156,20 @@ if page == "Matchs par date":
         st.info(f"**Source : historique** — {len(res)} matchs affichés "
                 f"sur {len(res_tout)} ce jour-là. Cotes de clôture Pinnacle, résultat connu.")
     else:
-        st.success(f"**Source : collecte propre** — {len(res)} matchs affichés "
+        fournisseur = r.get("fournisseur") or "football-data"
+        nom = {"odds-api": "The Odds API", "football-data": "football-data.co.uk"}.get(
+            fournisseur, fournisseur)
+        st.success(f"**Source : collecte propre — {nom}** — {len(res)} matchs affichés "
                    f"sur {len(res_tout)} collectés, jusqu'à {int(res_tout.n_books.max())} "
                    "bookmakers par match. Dernière cote observée pour chacun.")
-        st.caption("⚠️ La collecte ne couvre que les matchs publiés par le flux « fixtures » : "
-                   "pour une date future, ce n'est pas nécessairement la totalité de la journée.")
+        if fournisseur == "odds-api":
+            st.caption("Couverture limitée aux championnats de `ODDS_API_SPORTS` ayant un match "
+                       "dans les 36 h — c'est ce qui tient dans le budget de crédits gratuit.")
+        else:
+            st.caption("⚠️ football-data ne publie ses fixtures que deux fois par semaine : "
+                       "pour une date future, ce n'est pas nécessairement la totalité de la "
+                       "journée. Configurez The Odds API pour une couverture continue "
+                       "(`uv run odds config`).")
 
     if len(res) == 0:
         st.warning("Aucun championnat sélectionné.")

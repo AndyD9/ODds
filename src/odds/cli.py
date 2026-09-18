@@ -151,10 +151,13 @@ def cmd_collect(args) -> int:
         print()
         return 0
 
-    print(f"Collecte — {pd.Timestamp.utcnow():%Y-%m-%d %H:%M:%S} UTC")
+    print(f"Collecte — {pd.Timestamp.now("UTC"):%Y-%m-%d %H:%M:%S} UTC")
     r = collecter()
     print(f"\n  run {r['run_id']} · {r['matchs']} matchs · "
           f"{r['vues']} cotes vues · {r['ecrites']} écrites")
+    if r.get("credits"):
+        print(f"  crédits The Odds API : {r['credits']} consommés · "
+              f"{r.get('credits_restants')} restants ce mois-ci")
     if r["erreurs"]:
         print("  erreurs :", "; ".join(r["erreurs"]))
         return 1

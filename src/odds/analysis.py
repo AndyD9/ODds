@@ -211,30 +211,43 @@ HORS_CONSENSUS = AGREGATS + AUTRE_INSTANT
 BENCHMARKS = ("betfair_exchange", "pinnacle_closing", "pinnacle")
 
 
+# Ordre de préférence entre sources collectées. The Odds API d'abord : elle
+# est continue, porte ~24 bookmakers dont Pinnacle et Betfair Exchange, là où
+# football-data ne publie que deux fois par semaine et a perdu Pinnacle.
+# On ne MÉLANGE pas les deux : les noms d'équipe diffèrent d'une source à
+# l'autre et un appariement approximatif créerait des doublons silencieux.
+PREFERENCE_SOURCES = ("odds-api", "football-data")
+
+
 def _long_depuis_collecte(jour: pd.Timestamp) -> pd.DataFrame:
     import sqlite3
     if not BDD_COLLECTE.exists():
         return pd.DataFrame()
+    requete = """
+        SELECT s.fixture_key, s.source, s.country, s.league, s.kickoff,
+               s.home_team, s.away_team, s.bookmaker, s.selection,
+               s.odds, s.observed_at
+        FROM odds_snapshot s
+        JOIN (
+            SELECT fixture_key, bookmaker, selection, MAX(observed_at) AS vu
+            FROM odds_snapshot WHERE market = '1X2'
+            GROUP BY fixture_key, bookmaker, selection
+        ) d
+          ON s.fixture_key = d.fixture_key AND s.bookmaker = d.bookmaker
+         AND s.selection = d.selection AND s.observed_at = d.vu
+        WHERE s.market = '1X2' AND substr(s.kickoff, 1, 10) = ?
+    """
     con = sqlite3.connect(BDD_COLLECTE)
     try:
-        d = pd.read_sql(
-            """
-            SELECT s.fixture_key, s.country, s.league, s.kickoff,
-                   s.home_team, s.away_team, s.bookmaker, s.selection,
-                   s.odds, s.observed_at
-            FROM odds_snapshot s
-            JOIN (
-                SELECT fixture_key, bookmaker, selection, MAX(observed_at) AS vu
-                FROM odds_snapshot WHERE market = '1X2'
-                GROUP BY fixture_key, bookmaker, selection
-            ) d
-              ON s.fixture_key = d.fixture_key AND s.bookmaker = d.bookmaker
-             AND s.selection = d.selection AND s.observed_at = d.vu
-            WHERE s.market = '1X2' AND substr(s.kickoff, 1, 10) = ?
-            """,
-            con, params=(jour.strftime("%Y-%m-%d"),))
+        d = pd.read_sql(requete, con, params=(jour.strftime("%Y-%m-%d"),))
     finally:
         con.close()
+    if len(d) == 0 or "source" not in d.columns:
+        return d
+    for src in PREFERENCE_SOURCES:
+        sous = d[d.source == src]
+        if len(sous):
+            return sous.reset_index(drop=True)
     return d
 
 
@@ -276,12 +289,16 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     jour = pd.Timestamp(jour)
 
     long = _long_depuis_collecte(jour)
-    source = "collecte"
-    if len(long) == 0:
+    source, fournisseur = "collecte", None
+    if len(long):
+        fournisseur = (str(long.source.iloc[0]) if "source" in long.columns
+                       and pd.notna(long.source.iloc[0]) else "football-data")
+    else:
         long = _long_depuis_historique(jour)
-        source = "historique"
+        source, fournisseur = "historique", "pinnacle-closing"
     if len(long) == 0:
-        return {"source": None, "resume": pd.DataFrame(), "detail": pd.DataFrame()}
+        return {"source": None, "fournisseur": None,
+                "resume": pd.DataFrame(), "detail": pd.DataFrame()}
 
     # --- dévig, un livre à la fois ----------------------------------------
     large = long.pivot_table(
@@ -290,7 +307,8 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     large = large.dropna(subset=["home", "draw", "away"])
     large = large[(large[["home", "draw", "away"]] > 1.0).all(axis=1)]
     if len(large) == 0:
-        return {"source": source, "resume": pd.DataFrame(), "detail": pd.DataFrame()}
+        return {"source": source, "fournisseur": fournisseur,
+                "resume": pd.DataFrame(), "detail": pd.DataFrame()}
 
     cotes = large[["home", "draw", "away"]].to_numpy(float)
     p = devig_matrix(cotes, methode)
@@ -358,7 +376,8 @@ def matchs_a_la_date(jour, methode: str = "shin") -> dict:
     cons["accord"] = cons.issue_probable == cons.issue_prix
 
     cons = cons.sort_values("kickoff").reset_index(drop=True)
-    return {"source": source, "resume": cons, "detail": detail}
+    return {"source": source, "fournisseur": fournisseur,
+            "resume": cons, "detail": detail}
 
 
 def dates_disponibles() -> dict:

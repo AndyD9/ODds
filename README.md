@@ -155,9 +155,30 @@ Pinnacle n'étant plus publié après le **2026-01-14**, aucune mesure en avant 
 un historique que l'on constitue soi-même. La collecte ne coûte rien mais prend des mois : elle
 doit tourner avant qu'on en ait besoin.
 
-**Benchmark retenu en avant : Betfair Exchange** (`BFE`) — prix réellement négociable, et le seul
-substitut sérieux à Pinnacle dans les flux restants. Sont également captés Bet365, BetVictor,
-Bwin, Paddy Power, Sky Bet, Betfair Sportsbook, plus le max et la moyenne de marché.
+Deux sources alimentent la collecte :
+
+| Source | Cadence | Bookmakers | Clé requise |
+|---|---|---|---|
+| **The Odds API** | continue | ~24, dont **Pinnacle** et **Betfair Exchange** | oui |
+| football-data.co.uk | 2×/semaine | 8, sans Pinnacle depuis 2026-01 | non |
+
+The Odds API ramène Pinnacle, perdu en janvier. Le tableau de bord la préfère quand elle couvre
+la date demandée. **Les deux sources ne sont jamais mélangées** : les noms d'équipe diffèrent et
+un appariement approximatif créerait des doublons silencieux.
+
+#### Économie de crédits
+
+L'offre gratuite donne 500 crédits/mois. Le tarif est de 1 crédit par championnat × marché ×
+région, et un appel renvoie **tous** les matchs à venir du championnat.
+
+La passe interroge d'abord `/events`, **gratuit et illimité**, pour savoir quels championnats
+jouent réellement dans les 36 h — puis ne dépense un crédit que sur ceux-là. Un championnat au
+repos ne coûte rien. `ODDS_API_BUDGET_JOUR` plafonne la consommation quotidienne, et la passe
+s'arrête net une fois le plafond atteint.
+
+> **Les tests ne consomment jamais de crédits.** `tests/conftest.py` neutralise la configuration
+> et bloque la couche réseau du client pour toute la suite. Sans ce garde-fou, lancer les tests
+> dépensait de l'argent réel — c'est arrivé, pour ~100 crédits.
 
 Stockage : `research/data/odds_history.db` (SQLite), format long — une ligne par
 (match, bookmaker, marché, sélection, instant). `observed_at` est **notre** horodatage UTC, pas
@@ -225,6 +246,7 @@ src/odds/
 ├── pit/walk_forward.py      harnais point-in-time
 ├── backtest/                découpage temporel, Brier, log loss, bootstrap par blocs
 ├── config.py                configuration locale (.env), secrets masqués
+├── data/oddsapi.py          client The Odds API, budget et /events gratuit
 ├── data/collect.py          collecte propre, horodatée, dédupliquée
 ├── analysis.py              noyau partagé CLI / tableau de bord
 └── cli.py
@@ -232,7 +254,7 @@ src/odds/
 app/dashboard.py             tableau de bord Streamlit
 prereg/                      hypothèses pré-enregistrées, datées, avec leurs verdicts
 research/RESULTS.md          journal des résultats mesurés
-tests/                       171 tests, dont le test anti-fuite
+tests/                       182 tests, dont le test anti-fuite
 ```
 
 ## Tests
