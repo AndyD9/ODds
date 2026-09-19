@@ -7,6 +7,16 @@ __pycache__/
 logs/
 .env
 .env.local
+# secrets de l'application hébergée (decisions/0009) — l'exemple, lui, est versionné
+.streamlit/secrets.toml
 
 # état irremplaçable : carnet de paris, base de collecte
 data/
+
+# Aucune base ne vit à la racine : `chemins.py` les place dans data/ (état) et
+# les tests dans un tmp_path. Un .db qui apparaît ici est un résidu — ignoré
+# pour qu'un `git add -A` distrait ne commite jamais un carnet de paris.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

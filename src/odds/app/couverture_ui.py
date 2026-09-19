@@ -27,6 +27,7 @@ from odds import paper
 from odds.analysis import (AGREGATS, AUTRE_INSTANT, fiabilite_buts,
                            tranche_fiabilite, tranche_fiabilite_buts)
 from odds.app import buts_ui, theme
+from odds.market import commission
 from odds.market import couverture as cv
 from odds.market.vocabulaire import selection_collectee
 from odds.models.football import buts
@@ -46,17 +47,29 @@ def _euros(x: float) -> str:
     return f"{x:,.2f} €".replace(",", " ")
 
 
+def _le_mieux_payant(d: pd.DataFrame, col: str):
+    """Ligne dont la cote NETTE est la plus haute — celle qui paie le plus.
+
+    Sur la cote brute, une bourse d'échange gagne presque toujours : elle ne
+    prend pas sa marge dans le prix. Elle la prend sur le gain, et c'est
+    après commission que les prix se comparent.
+    """
+    net = [commission.cote_nette(c, b)
+           for c, b in zip(d[col], d.bookmaker)]
+    i = int(pd.Series(net, index=d.index).idxmax())
+    return float(d.loc[i, col]), str(d.loc[i, "bookmaker"])
+
+
 def _meilleurs_prix(codes, det_match: pd.DataFrame,
                     totaux: pd.DataFrame | None, fk: str) -> dict:
-    """``code -> (cote, bookmaker)`` du meilleur prix chez un livre réel."""
+    """``code -> (cote affichée, bookmaker)`` du prix le mieux payant."""
     out = {}
     for code in codes:
         if code in ("1", "N", "2"):
             col = {"1": "cote_1", "N": "cote_N", "2": "cote_2"}[code]
             d = det_match[["bookmaker", col]].dropna()
             if len(d):
-                i = d[col].idxmax()
-                out[code] = (float(d.loc[i, col]), str(d.loc[i, "bookmaker"]))
+                out[code] = _le_mieux_payant(d, col)
             continue
         paire = selection_collectee(code)
         if paire is None or totaux is None or len(totaux) == 0:
@@ -64,8 +77,7 @@ def _meilleurs_prix(codes, det_match: pd.DataFrame,
         d = totaux[(totaux.fixture_key == fk) & (totaux.selection == paire[1])
                    & ~totaux.bookmaker.astype(str).str.startswith("_")]
         if len(d):
-            i = d.odds.idxmax()
-            out[code] = (float(d.loc[i, "odds"]), str(d.loc[i, "bookmaker"]))
+            out[code] = _le_mieux_payant(d, "odds")
     return out
 
 
@@ -113,9 +125,10 @@ def bloc_couverture(ligne, det: pd.DataFrame, methode: str,
             probas = {"1": float(ligne.p_1), "N": float(ligne.p_N),
                       "2": float(ligne.p_2)}
         elif not imp.fiable:
-            st.error("La matrice de score ne reproduit pas les prix de ce match "
-                     f"(écart {100 * imp.ecart_max:.2f} pts) : aucun marché de "
-                     "buts n'est proposé à la couverture. Le 1X2 reste disponible.")
+            theme.reserve("La matrice de score ne reproduit pas les prix de ce "
+                          f"match (écart {100 * imp.ecart_max:.2f} pts) : aucun "
+                          "marché de buts n'est proposé à la couverture. Le 1X2 "
+                          "reste disponible.", "grave")
             return
         else:
             probas = {c: buts.probabilite(imp.matrice, c) for c in codes}
@@ -129,7 +142,7 @@ def bloc_couverture(ligne, det: pd.DataFrame, methode: str,
 
         # --- une ligne par issue : cote et bookmaker ------------------------
         prix = _meilleurs_prix(codes, books, totaux, fk)
-        cotes, bookmakers = {}, {}
+        cotes_brutes, bookmakers = {}, {}
         for code in codes:
             c1, c2, c3 = st.columns([2, 1, 1.4])
             c1.markdown(f"**{libelles[code]}**  \n"
@@ -145,13 +158,26 @@ def bloc_couverture(ligne, det: pd.DataFrame, methode: str,
                 aide = ("Aucun prix relevé pour ce marché : la valeur proposée est "
                         "la cote JUSTE (espérance nulle). Remplacez-la par le prix "
                         "réellement affiché chez vous.")
-            cotes[code] = float(c2.number_input(
+            cotes_brutes[code] = float(c2.number_input(
                 "Cote", min_value=1.01, max_value=1000.0, value=float(cote_def),
                 step=0.01, key=f"cv_cote_{fk}_{code}", help=aide,
                 label_visibility="collapsed"))
             bookmakers[code] = c3.text_input(
                 "Chez", value=book_def, placeholder="bookmaker",
                 key=f"cv_book_{fk}_{code}", label_visibility="collapsed") or None
+
+        # Le moteur ne voit que des cotes NETTES : répartition, espérance et
+        # pire cas sont des euros, et une bourse en rend moins qu'elle
+        # n'affiche. Le carnet, lui, garde les deux.
+        commissions = {c: commission.taux(bookmakers.get(c)) for c in codes}
+        cotes = {c: commission.cote_nette(cotes_brutes[c], taux_=commissions[c])
+                 for c in codes}
+        if any(commissions.values()):
+            st.caption("Cotes ramenées au **net de commission** : "
+                       + " · ".join(
+                           f"{libelles[c]} {cotes_brutes[c]:.2f} → {cotes[c]:.2f}"
+                           for c in codes if commissions[c])
+                       + ". C'est ce qui est réparti, gagné et perdu.")
 
         booksum = sum(1.0 / c for c in cotes.values())
         b = paper.bankroll()
@@ -292,15 +318,17 @@ def bloc_couverture(ligne, det: pd.DataFrame, methode: str,
                   "quelle que soit l'issue" if cvr.complete else "si aucune issue couverte ne sort",
                   delta_color="off")
         if cvr.complete and cvr.pire < 0:
-            st.error("Couverture complète à perte garantie : ce n'est pas une mise, "
-                     "c'est un don au bookmaker. Le moteur ne la propose jamais ; elle "
-                     "reste enregistrable pour l'exercice.")
+            theme.reserve("Couverture complète à perte garantie : ce n'est pas une "
+                          "mise, c'est un don au bookmaker. Le moteur ne la propose "
+                          "jamais ; elle reste enregistrable pour l'exercice.",
+                          "grave")
 
         if st.button("Enregistrer la couverture", type="primary",
-                     key=f"cv_ok_{fk}_{nom}_{mode}", use_container_width=True):
+                     key=f"cv_ok_{fk}_{nom}_{mode}", width="stretch"):
             groupe = paper.enregistrer_couverture(
                 fixture_key=fk, kickoff=str(ligne.kickoff), home_team=dom, away_team=ext,
-                cv=cvr, bookmakers=bookmakers,
+                cv=cvr, bookmakers=bookmakers, cotes_brutes=cotes_brutes,
+                commissions=commissions,
                 mises_proposees={c: prop["mises"].get(c, 0.0) for c in cvr.codes},
                 league=str(ligne.league), source=source, methode=methode,
                 bankroll_avant=b["courante"], f_effectif=prop["f_effectif"],

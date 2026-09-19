@@ -102,6 +102,7 @@ ne peut pas fuiter dans cette sortie.
 | `ODDS_API_REGIONS` | `eu` (Pinnacle, Betfair…), `uk`, `us`, `au` |
 | `ODDS_API_MARKETS` | `h2h` (1X2), `totals`, `spreads` |
 | `ODDS_API_BUDGET_JOUR` | Garde-fou en crédits par jour |
+| `COMMISSION_EXCHANGE` | Votre commission sur les bourses d'échange, en % du gain (défaut : le taux de chaque bourse) |
 
 `odds config` calcule le coût d'une passe et le nombre de passes quotidiennes que le budget
 autorise, puis avertit si la configuration dépasse les 500 crédits mensuels de l'offre gratuite.
@@ -193,12 +194,94 @@ Deux enseignements, tous deux mesurés :
 Chaque ligne affiche aussi le **taux d'échec** : même un pronostic « très élevée » se trompe
 environ 7 % du temps. Sur une date passée, une colonne indique si le pronostic s'est vérifié.
 
+#### Sûr et payant
+
+Un pari à forte espérance tombe presque toujours sur un outsider — c'est mécanique, le favori est
+le mieux coté par le marché. Pour qui veut d'abord un pari qui **passe**, l'outil affiche en tête
+un second bloc, régi par deux seuils : le favori du marché en **confiance « élevée »**, soit
+**70 % ou plus**, payé **1,25 net ou mieux**, au-dessus du consensus des autres livres, chez un
+bookmaker réel. Le titre du bloc dit ce que ce niveau coûte, mesuré sur l'historique : **1 pari
+sur 4 perd**.
+
+Les deux seuils se contraignent — la cote juste d'un favori à p vaut `1 / p` — et l'interface le
+dit plutôt que de rester vide sans motif. La règle avait été demandée à 80 % :
+
+```text
+cote juste d'un favori à 80 %  =  1 / 0,80  =  1,25
+```
+
+Les exiger ensemble revenait à demander qu'un livre paie un gros favori **à son prix juste ou
+mieux**. Mesuré sur les 144 matchs collectés : les 7 favoris à 80 % et plus étaient offerts à
+1,10 de cote nette médiane, pour un écart médian de −1,17 %. **Aucun** n'atteignait 1,25.
+
+| seuil de probabilité | cote juste | candidats (cote nette ≥ 1,25 et écart > 0) | réussite mesurée |
+|---|---|---|---|
+| 85 % | 1,176 | **0** | 89,2 % (n = 1 085) |
+| 80 % | 1,250 | **0** | 83,6 % (n = 2 174) |
+| 75 % | 1,333 | 3 | 79,1 % (n = 3 173) |
+| 70 % | 1,429 | 4 | 74,5 % (n = 5 028) |
+
+Le seuil a donc été abaissé le jour même à **70 %**, la borne du niveau de confiance « Élevée »
+que la page affiche déjà à côté de chaque pronostic. À ce niveau la cote juste vaut 1,43 : le
+plancher de 1,25 n'écarte plus rien, c'est l'écart positif chez un livre réel qui fait le tri. Le
+prix de ce point est dans la table : 74,5 % de réussite au lieu de 83,6 %. Les deux curseurs sont
+dans les réglages avancés, et le titre du bloc affiche toujours les valeurs retenues, le niveau de
+confiance qui leur correspond et le taux d'échec mesuré. Chaque carte
+porte le verdict ordinaire du prix (soutenu, isolé, fragile) : la règle dit ce qui est sûr et
+payant, le verdict dit ce que le prix vaut. Cadrage complet et ce qu'on refuse d'en conclure :
+[`prereg/0006`](prereg/0006-sur-et-payant.md).
+
+#### Valeur d'un pari
+
+Le pronostic dit ce qui est probable ; il ne dit pas ce qui vaut d'être pris. Au prix juste,
+miser sur le favori a une espérance nulle — le marché l'a déjà intégré. Ce qui départage deux
+paris est leur **valeur** : l'espérance par euro misé, `p × cote − 1`, positive quand le prix
+bat la cote juste `1 / p`. Un favori à 80 % coté 1,20 vaut −4 % ; un outsider à 24 % coté 4,40
+vaut +5,6 %. Kelly n'en est qu'une mise à l'échelle par `cote − 1` : même signe, même seuil.
+
+L'outil la met au premier plan, partout où l'on choisit :
+
+- **Matchs du jour** : une colonne « Valeur » par match (issue, prix, livre), un tri par valeur,
+  et un encadré « le pari à la plus forte valeur du jour » à côté du « pronostic le plus sûr » —
+  les deux coïncident rarement, et c'est le premier qui justifie de prendre un pari plutôt qu'un
+  autre ;
+- **formulaire de pari** : la valeur de chaque issue au meilleur prix relevé figure dans le menu
+  même, puis la valeur du prix saisi ouvre la rangée de chiffres, avec une phrase qui dit
+  pourquoi ce pari — ou pourquoi il n'y a pas de valeur à ce prix ;
+- **Mes paris** : la valeur annoncée de chaque pari au moment de le prendre, et au bilan
+  l'espérance cumulée en face du profit réalisé. L'écart entre les deux est la variance des
+  résultats, pas un jugement sur la sélection.
+
+**Une cote d'exchange est comptée nette de commission.** Une bourse (Betfair, Matchbook,
+Smarkets) ne prend presque rien dans le prix — d'où des cotes systématiquement plus hautes — et
+se paie sur le gain : `cote nette = 1 + (cote − 1) × (1 − c)`. Comparée brute à un bookmaker,
+elle gagne presque toujours, et pour rien. Mesuré sur les 144 matchs collectés, avant correction :
+**14 des 21 « écarts soutenus » portaient sur Betfair Exchange**, alors qu'à 5 % de commission un
+écart de +1,8 % à la cote 2,38 vaut −1,1 %. En net, il reste **10 écarts soutenus sur les mêmes
+144 matchs**, aucun sur une bourse — et là où une bourse reste le prix le mieux payant, son écart
+moyen est de −1,24 %.
+
+L'outil affiche donc les deux prix — « à 6,00 chez Matchbook · 5,92 net » — et calcule sur le
+second : espérance, Kelly, mise proposée, profit du carnet et CLV. La probabilité, elle, reste lue
+sur la cote brute : la commission prélève sur le gain, elle n'apprend rien sur le match. Réglez
+`COMMISSION_EXCHANGE` avec le taux de votre compte ; cadrage complet dans
+[`decisions/0008`](decisions/0008-commission-des-exchanges.md).
+
+Ce que cette valeur mesure, et rien de plus : `p` est le **consensus dévigé des autres
+bookmakers**, recalculé sans le livre qui affiche le prix. Une valeur positive dit que ce prix
+bat les autres opérateurs — pas qu'il bat la vérité, qu'aucun modèle de ce projet n'approche
+mieux que le marché (R8, R9). Trois filtres séparent une valeur d'une cote périmée, et seuls les
+trois réunis donnent le badge vert « écart soutenu » : écart d'au moins 1 %, au moins deux
+livres à 1 % du meilleur prix et pas plus de 2 % au-dessus du deuxième, même signe sous les
+quatre méthodes de dévig. Un écart isolé ou fragile est affiché, mais coloré comme du bruit, et
+le formulaire le rappelle au moment de parier dessus.
+
 #### Dispersion des prix (analyse secondaire)
 
-En annexe, l'outil montre où le meilleur prix disponible s'écarte du consensus des **autres**
-bookmakers — une observation sur le désaccord entre opérateurs, sans rapport avec la probabilité
-qu'une issue se produise. Trois filtres : consensus recalculé sans le book généreux, écart au
-deuxième meilleur prix, et robustesse aux quatre méthodes de dévig.
+En annexe, le détail de ces écarts : où le meilleur prix disponible s'écarte du consensus des
+**autres** bookmakers — une observation sur le désaccord entre opérateurs, sans rapport avec la
+probabilité qu'une issue se produise. Trois filtres : consensus recalculé sans le book généreux,
+écart au deuxième meilleur prix, et robustesse aux quatre méthodes de dévig.
 
 Ce dernier filtre est le plus instructif. Le 2026-09-18, Bayern Munich – Union Berlin : le nul à
 la cote 23,00 affichait +6,9 % d'écart. Recalculé sous les quatre méthodes, il va de −16,8 % à
@@ -282,6 +365,44 @@ launchctl unload ~/Library/LaunchAgents/com.odds.collect.plist
 rm ~/Library/LaunchAgents/com.odds.collect.plist
 ```
 
+### Héberger l'application, sur invitation
+
+Hors du poste, l'application tourne sur **Streamlit Community Cloud** (gratuit), n'ouvre qu'aux
+adresses d'une liste d'invités, et chaque personne tient **son** carnet — le règlement d'un
+match, lui, vaut pour tout le monde : un score est un fait. L'état (carnet, base de collecte,
+parquets) vit dans un seau privé **Supabase Storage**, copié fichier entier à chaque écriture ;
+la collecte horaire passe sur **GitHub Actions**. Le raisonnement, ce qu'on y perd et ce qui
+ferait changer d'approche : [`decisions/0009`](decisions/0009-heberger-sur-invitation.md).
+
+Sans rien configurer, rien ne change : `uv run odds app` reste local, sans connexion.
+
+Mise en service, une fois :
+
+1. **Un dépôt GitHub** (privé suffit) qui contient ce projet.
+2. **Un projet Supabase**, avec un seau Storage **privé** nommé `etat`. Noter l'URL du projet et
+   la clé de service (*service role*) — elle ne doit jamais apparaître côté client ni dans le
+   dépôt.
+3. **Un client OAuth Google** (Google Cloud Console → identifiants → application web), avec pour
+   URI de redirection autorisée `https://<votre-app>.streamlit.app/oauth2callback`.
+4. **Amorcer le seau** depuis le disque local, avec les deux variables Supabase dans `.env` :
+
+   ```bash
+   uv run odds etat pousser
+   ```
+
+5. **Déployer sur Community Cloud** : nouvelle application, dépôt ci-dessus, fichier principal
+   `src/odds/app/dashboard.py`, Python 3.12. Dans *Settings → Secrets*, coller
+   [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) rempli : la liste
+   `ODDS_INVITES`, `ODDS_PROPRIETAIRE`, les valeurs Supabase et la section `[auth]`.
+6. **Brancher la collecte** : dans le dépôt GitHub, *Settings → Secrets and variables → Actions*,
+   définir `ODDS_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`. Le workflow
+   [`collecte.yml`](.github/workflows/collecte.yml) tourne chaque heure à h+7 ; désinstaller
+   l'agent `launchd` local, sinon deux collecteurs écriraient le même fichier.
+
+Ajouter un invité : ajouter son adresse à `ODDS_INVITES` dans les secrets Community Cloud,
+l'application redémarre seule. Dépannage : `uv run odds etat tirer` ramène l'état du seau sur le
+poste ; l'application locale et la version hébergée lisent alors le même carnet.
+
 ### Autres commandes
 
 ```bash
@@ -323,8 +444,10 @@ L'historique reste complet, mais aucune mesure en avant ne peut s'y appuyer.
 src/odds/
 ├── chemins.py               emplacements : data/ (état) et research/data/ (dérivé)
 ├── temps.py                 horodatages UTC, un format par usage
-├── config.py                configuration locale (.env), secrets masqués
+├── config.py                configuration locale (.env, secrets Streamlit), secrets masqués
+├── stockage.py              copie distante de l'état dans un seau Supabase (decisions/0009)
 ├── market/devig.py          Shin, power, odds ratio, proportionnelle (scalaire + vectorisé)
+├── market/commission.py     bourses d'échange : cote nette, taux par livre
 ├── market/couverture.py     partitions du catalogue, dutching, Kelly simultané
 ├── market/vocabulaire.py    traduction unique code de pari <-> (market, selection) collecté
 ├── data/footballdata.py     ingestion et normalisation
@@ -338,8 +461,9 @@ src/odds/
 │   ├── sources.py           lecture des deux sources au format long
 │   ├── consensus.py         matchs à une date : consensus, verdict, totaux (MatchsDuJour)
 │   └── fiabilite.py         réussite mesurée par tranche, 1X2 et marchés de buts
-├── paper.py                 carnet papier : staking prereg §4, couvertures groupées, règlement, CLV
+├── paper.py                 carnet papier par utilisateur : staking prereg §4, couvertures, règlement, CLV
 ├── app/                     tableau de bord Streamlit (dashboard, buts_ui, paris_ui, couverture_ui, theme)
+│   └── acces.py             connexion et liste d'invités de l'application hébergée
 └── cli.py
 
 data/                        ÉTAT, à sauvegarder : paper.db, odds_history.db

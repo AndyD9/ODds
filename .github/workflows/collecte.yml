@@ -1,0 +1,51 @@
+# Collecte horaire des cotes — remplace l'agent launchd quand l'application est
+# hébergée (decisions/0009). La base de collecte est tirée du seau Supabase
+# avant la passe et repoussée après ; l'application la relit quand son
+# empreinte change. Un seul écrivain pour ce fichier : ce workflow.
+#
+# Secrets à définir dans le dépôt : ODDS_API_KEY, SUPABASE_URL,
+# SUPABASE_SERVICE_KEY. L'ordonnanceur de collect.py décide lui-même si la
+# passe vaut un appel payant ; un déclenchement à vide ne coûte rien.
+#
+# GitHub désactive les workflows planifiés d'un dépôt sans activité depuis
+# 60 jours : un commit, ou un « Run workflow » à la main, les relance.
+name: Collecte des cotes
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # chaque heure, à h+7 — pas à l'heure pile, surchargée
+  workflow_dispatch:
+
+concurrency:
+  group: collecte
+  cancel-in-progress: false
+
+jobs:
+  collecter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Tant que les secrets ne sont pas définis, chaque passe est un
+      # non-événement : pas d'échec horaire, pas de courriel d'alerte.
+      CONFIGURE: ${{ secrets.ODDS_API_KEY != '' && secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_KEY != '' }}
+    steps:
+      - if: env.CONFIGURE != 'true'
+        run: echo "Secrets absents (ODDS_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY) — passe ignorée."
+      - if: env.CONFIGURE == 'true'
+        uses: actions/checkout@v4
+      - if: env.CONFIGURE == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - if: env.CONFIGURE == 'true'
+        run: uv sync --no-dev
+      - name: Collecte
+        if: env.CONFIGURE == 'true'
+        run: uv run odds collect
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ODDS_API_SPORTS: ${{ vars.ODDS_API_SPORTS }}
+          ODDS_API_MARKETS: ${{ vars.ODDS_API_MARKETS }}
+          ODDS_API_BUDGET_JOUR: ${{ vars.ODDS_API_BUDGET_JOUR }}

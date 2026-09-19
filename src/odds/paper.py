@@ -36,12 +36,14 @@ est un cache reconstructible ; le carnet, non. Les mélanger ferait qu'un
 from __future__ import annotations
 
 import sqlite3
+from contextvars import ContextVar
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from odds import chemins, temps
+from odds import chemins, config, stockage, temps
+from odds.market import commission as commission_
 from odds.market import couverture as couverture_
 from odds.market.vocabulaire import selection_collectee
 from odds.models.football import buts
@@ -61,6 +63,38 @@ DRAWDOWN_REEXAMEN = 0.20    # 20 % → arrêt et audit
 N_MIN_ROI = 20_000
 
 BANKROLL_DEFAUT = 1000.0
+
+# ---------------------------------------------------------------------------
+# Utilisateur du carnet — decisions/0009
+# ---------------------------------------------------------------------------
+# Un carnet, plusieurs personnes : chaque pari porte l'adresse de qui l'a
+# inscrit, et chacun ne lit et ne modifie que les siens. Le règlement d'un
+# match et la capture des clôtures, eux, portent sur tous les paris du match :
+# un score est un fait, pas une opinion.
+#
+# L'utilisateur courant est une variable de contexte, posée par
+# ``app/acces.py`` à chaque exécution de page, jamais un paramètre qui
+# traverserait quinze signatures. En son absence — CLI, tests, application
+# locale — c'est le propriétaire configuré, sinon « local », le nom que
+# portent tous les paris inscrits avant qu'il y ait des comptes.
+UTILISATEUR_LOCAL = "local"
+_UTILISATEUR: ContextVar[str | None] = ContextVar("odds_utilisateur", default=None)
+
+
+def utilisateur_courant() -> str:
+    return _UTILISATEUR.get() or config.get("ODDS_PROPRIETAIRE") or UTILISATEUR_LOCAL
+
+
+def definir_utilisateur(adresse: str | None) -> None:
+    """Pose l'utilisateur du carnet pour le contexte courant (None = défaut)."""
+    _UTILISATEUR.set(adresse.strip().lower() if adresse else None)
+
+
+def _cle_bankroll(utilisateur: str) -> str:
+    """Le propriétaire et « local » partagent la bankroll historique."""
+    if utilisateur in (UTILISATEUR_LOCAL, (config.get("ODDS_PROPRIETAIRE") or "").lower()):
+        return "bankroll_initiale"
+    return f"bankroll_initiale:{utilisateur}"
 
 ISSUES = ("1", "N", "2")
 LIBELLES = {"1": "Domicile", "N": "Nul", "2": "Extérieur"}
@@ -105,6 +139,27 @@ def selections_collectees(code: str) -> tuple[tuple[str, str], ...]:
 # ===========================================================================
 # Moteur de mise
 # ===========================================================================
+
+def valeur(p: float, cote: float) -> float:
+    """Valeur d'un pari : espérance par unité misée, ``p × cote − 1``.
+
+    +0,03 : on attend trois centimes par euro misé ; −0,05 : on en perd
+    cinq en moyenne. C'est ce chiffre, et non la probabilité, qui dit si un
+    pari vaut d'être pris — un favori à 80 % coté 1,20 a une valeur de
+    −4 %, un outsider à 24 % coté 4,40 en a une de +5,6 %. Kelly n'en est
+    qu'une mise à l'échelle par ``cote − 1`` : même signe, même seuil.
+
+    Elle se mesure contre ``p``, la probabilité dévigée du consensus des
+    livres — pas contre la vérité, que personne ne connaît. Un pari « à
+    valeur » est un pari dont le prix bat celui des autres opérateurs, rien
+    de plus (RESULTS R8 : le prix reste la meilleure information).
+    """
+    if cote <= 1.0:
+        raise ValueError(f"cote invalide : {cote!r} (doit être > 1)")
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"probabilité invalide : {p!r}")
+    return p * cote - 1.0
+
 
 def kelly(p: float, cote: float) -> float:
     """Fraction de Kelly complète : ``(p × cote − 1) / (cote − 1)``.
@@ -311,6 +366,7 @@ CREATE TABLE IF NOT EXISTS pari (
     marche          TEXT,
     cote            REAL NOT NULL,
     bookmaker       TEXT,
+    commission      REAL,
     p_modele        REAL NOT NULL,
     methode         TEXT,
     mise            REAL NOT NULL,
@@ -326,7 +382,8 @@ CREATE TABLE IF NOT EXISTS pari (
     buts_ext        INTEGER,
     regle_a         TEXT,
     note            TEXT,
-    groupe          TEXT
+    groupe          TEXT,
+    utilisateur     TEXT NOT NULL DEFAULT 'local'
 );
 CREATE INDEX IF NOT EXISTS idx_pari_match ON pari(fixture_key, issue);
 CREATE INDEX IF NOT EXISTS idx_pari_kickoff ON pari(kickoff);
@@ -344,12 +401,20 @@ CREATE TABLE IF NOT EXISTS reglage (
 MIGRATIONS = {"marche": "TEXT", "buts_dom": "INTEGER", "buts_ext": "INTEGER",
               # v3 — les jambes d'une même couverture partagent un ``groupe``
               # (decisions/0006). NULL pour un pari isolé.
-              "groupe": "TEXT"}
+              "groupe": "TEXT",
+              # v4 — part du gain prélevée par une bourse d'échange. Figée au
+              # moment du pari : le taux d'un compte change, un pari déjà pris
+              # ne change plus.
+              "commission": "REAL",
+              # v5 — qui a inscrit le pari (decisions/0009). Les paris
+              # antérieurs sont ceux de « local », adoptés par le propriétaire
+              # dès qu'il est configuré (voir ``_connexion``).
+              "utilisateur": "TEXT NOT NULL DEFAULT 'local'"}
 
 # Version du schéma, inscrite dans ``reglage`` une fois la migration faite.
 # La page « Mes paris » ouvre plusieurs connexions par affichage : sans ce
 # jalon, les UPDATE de conversion rejoueraient à chaque fois.
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "5"
 
 
 def _migrer(con: sqlite3.Connection) -> None:
@@ -363,6 +428,12 @@ def _migrer(con: sqlite3.Connection) -> None:
     - ``resultat`` portait l'issue SURVENUE ("1", "N", "2") et se comparait
       au pari. Un score ne se compare pas ainsi : la colonne porte désormais
       le VERDICT ("gagne", "perdu", "annule"), calculé une fois pour toutes.
+
+    v4 ajoute ``commission`` et la renseigne rétroactivement d'après le nom
+    du livre. Un pari pris sur une bourse d'échange **a toujours** payé sa
+    commission ; le carnet ne l'écrivait pas, et annonçait donc un gain que
+    l'on n'aurait pas encaissé. Le profit des paris déjà inscrits baisse en
+    conséquence — c'est une correction, pas une perte.
     """
     r = con.execute("SELECT valeur FROM reglage WHERE cle = 'schema_version'"
                     ).fetchone()
@@ -375,6 +446,10 @@ def _migrer(con: sqlite3.Connection) -> None:
             con.execute(f"ALTER TABLE pari ADD COLUMN {nom} {typ}")
 
     con.execute("UPDATE pari SET marche = '1X2' WHERE marche IS NULL")
+    for book, taux in commission_.TAUX_DEFAUT.items():
+        con.execute("UPDATE pari SET commission = ? WHERE commission IS NULL "
+                    "AND lower(trim(bookmaker)) = ?", (taux, book))
+    con.execute("UPDATE pari SET commission = 0 WHERE commission IS NULL")
     con.execute("UPDATE pari SET resultat = CASE WHEN resultat = issue "
                 "THEN 'gagne' ELSE 'perdu' END "
                 "WHERE resultat IN ('1', 'N', '2')")
@@ -394,7 +469,27 @@ def _connexion(chemin: Path | None = None) -> sqlite3.Connection:
     # la migration, et un index sur une colonne absente ferait échouer
     # l'ouverture avant qu'elle ait eu lieu.
     con.execute("CREATE INDEX IF NOT EXISTS idx_pari_groupe ON pari(groupe)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pari_utilisateur ON pari(utilisateur)")
+    # Le propriétaire adopte les paris inscrits avant qu'il y ait des comptes.
+    # Hors du jalon de version : la configuration peut arriver après la
+    # migration, et la requête ne coûte rien quand il n'y a rien à faire.
+    proprietaire = (config.get("ODDS_PROPRIETAIRE") or "").strip().lower()
+    if proprietaire and proprietaire != UTILISATEUR_LOCAL:
+        con.execute("UPDATE pari SET utilisateur = ? WHERE utilisateur = ?",
+                    (proprietaire, UTILISATEUR_LOCAL))
+        con.commit()
     return con
+
+
+def _valider(con: sqlite3.Connection, chemin: Path | None) -> None:
+    """Commit, puis copie distante du carnet réel (decisions/0009).
+
+    Un carnet désigné par ``chemin`` est un carnet de test ou d'export : il
+    n'est jamais publié. Sans configuration Supabase, ``publier`` est inerte.
+    """
+    con.commit()
+    if chemin is None:
+        stockage.publier(BASE_PARIS)
 
 
 def _maintenant() -> str:
@@ -404,8 +499,8 @@ def _maintenant() -> str:
 def bankroll_initiale(chemin: Path | None = None) -> float:
     con = _connexion(chemin)
     try:
-        r = con.execute("SELECT valeur FROM reglage WHERE cle = 'bankroll_initiale'"
-                        ).fetchone()
+        r = con.execute("SELECT valeur FROM reglage WHERE cle = ?",
+                        (_cle_bankroll(utilisateur_courant()),)).fetchone()
     finally:
         con.close()
     return float(r[0]) if r else BANKROLL_DEFAUT
@@ -416,17 +511,18 @@ def definir_bankroll_initiale(montant: float, chemin: Path | None = None) -> Non
         raise ValueError("La bankroll initiale doit être strictement positive.")
     con = _connexion(chemin)
     try:
-        con.execute("INSERT INTO reglage (cle, valeur) VALUES ('bankroll_initiale', ?) "
+        con.execute("INSERT INTO reglage (cle, valeur) VALUES (?, ?) "
                     "ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur",
-                    (str(float(montant)),))
-        con.commit()
+                    (_cle_bankroll(utilisateur_courant()), str(float(montant))))
+        _valider(con, chemin)
     finally:
         con.close()
 
 
 def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
                 issue: str, cote: float, p_modele: float, mise: float,
-                *, bookmaker: str | None = None, league: str | None = None,
+                *, bookmaker: str | None = None, commission: float | None = None,
+                league: str | None = None,
                 source: str | None = None, methode: str | None = None,
                 mise_proposee: float | None = None,
                 bankroll_avant: float | None = None,
@@ -435,6 +531,11 @@ def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
                 groupe: str | None = None,
                 chemin: Path | None = None) -> int:
     """Inscrit un pari papier. Renvoie son identifiant.
+
+    ``cote`` est la cote AFFICHÉE chez le livre, celle qu'on relit sur le
+    ticket. ``commission`` est la part du gain que la bourse prélèvera ;
+    déduite du nom du livre si on ne la donne pas, elle est figée ici parce
+    que le taux d'un compte peut changer, mais pas un pari déjà pris.
 
     ``groupe`` relie les jambes d'une même couverture ; un pari isolé n'en a
     pas. Pour inscrire une couverture entière d'un coup, voir
@@ -449,18 +550,23 @@ def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
     if mise <= 0:
         raise ValueError(f"mise invalide : {mise!r} (doit être > 0)")
 
+    if commission is None:
+        commission = commission_.taux(bookmaker)
+
     con = _connexion(chemin)
     try:
         cur = con.execute(
             "INSERT INTO pari (place_a, fixture_key, source, league, kickoff, "
-            "home_team, away_team, issue, marche, cote, bookmaker, p_modele, "
-            "methode, mise, mise_proposee, bankroll_avant, kelly, f_effectif, "
-            "plafond, note, groupe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "home_team, away_team, issue, marche, cote, bookmaker, commission, "
+            "p_modele, methode, mise, mise_proposee, bankroll_avant, kelly, "
+            "f_effectif, plafond, note, groupe, utilisateur) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (_maintenant(), fixture_key, source, league, kickoff, home_team,
              away_team, issue, buts.marche(issue).famille, float(cote),
-             bookmaker, float(p_modele), methode, float(mise), mise_proposee,
-             bankroll_avant, kelly_, f_effectif, plafond, note, groupe))
-        con.commit()
+             bookmaker, float(commission), float(p_modele), methode, float(mise),
+             mise_proposee, bankroll_avant, kelly_, f_effectif, plafond, note,
+             groupe, utilisateur_courant()))
+        _valider(con, chemin)
         return int(cur.lastrowid)
     finally:
         con.close()
@@ -470,6 +576,8 @@ def enregistrer(fixture_key: str, kickoff: str, home_team: str, away_team: str,
 def enregistrer_couverture(fixture_key: str, kickoff: str, home_team: str,
                            away_team: str, cv: couverture_.Couverture,
                            *, bookmakers: dict | None = None,
+                           cotes_brutes: dict | None = None,
+                           commissions: dict | None = None,
                            mises_proposees: dict | None = None,
                            league: str | None = None, source: str | None = None,
                            methode: str | None = None,
@@ -485,10 +593,18 @@ def enregistrer_couverture(fixture_key: str, kickoff: str, home_team: str,
     Chaque jambe garde sa propre cote, son propre bookmaker et sa propre
     probabilité — c'est ce qui permet de la régler et de lui calculer un
     CLV comme à n'importe quel pari. Le groupe n'ajoute qu'un lien.
+
+    ``cv.cotes`` porte les cotes **nettes**, celles sur lesquelles la
+    répartition a été calculée. ``cotes_brutes`` et ``commissions`` rendent
+    à chaque jambe le prix affiché chez son livre et le taux qui l'a réduit ;
+    sans eux, une jambe d'exchange se relirait comme un prix qu'on n'a jamais
+    vu affiché.
     """
     if cv.total <= 0:
         raise ValueError("couverture sans mise")
     bookmakers = bookmakers or {}
+    cotes_brutes = cotes_brutes or {}
+    commissions = commissions or {}
     mises_proposees = mises_proposees or {}
     fractions = couverture_.kelly_simultane(cv.probas, cv.cotes, cv.partition)
     groupe = f"cv-{fixture_key}-{_maintenant().replace(' ', 'T')}"
@@ -496,17 +612,23 @@ def enregistrer_couverture(fixture_key: str, kickoff: str, home_team: str,
     con = _connexion(chemin)
     try:
         for code in cv.codes:
+            comm = commissions.get(code)
+            if comm is None:
+                comm = commission_.taux(bookmakers.get(code))
             con.execute(
                 "INSERT INTO pari (place_a, fixture_key, source, league, kickoff, "
-                "home_team, away_team, issue, marche, cote, bookmaker, p_modele, "
-                "methode, mise, mise_proposee, bankroll_avant, kelly, f_effectif, "
-                "plafond, note, groupe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "home_team, away_team, issue, marche, cote, bookmaker, commission, "
+                "p_modele, methode, mise, mise_proposee, bankroll_avant, kelly, "
+                "f_effectif, plafond, note, groupe, utilisateur) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (_maintenant(), fixture_key, source, league, kickoff, home_team,
-                 away_team, code, buts.marche(code).famille, float(cv.cotes[code]),
-                 bookmakers.get(code), float(cv.probas[code]), methode,
+                 away_team, code, buts.marche(code).famille,
+                 float(cotes_brutes.get(code, cv.cotes[code])),
+                 bookmakers.get(code), float(comm), float(cv.probas[code]), methode,
                  float(cv.mises[code]), mises_proposees.get(code), bankroll_avant,
-                 fractions.get(code), f_effectif, plafond, note, groupe))
-        con.commit()
+                 fractions.get(code), f_effectif, plafond, note, groupe,
+                 utilisateur_courant()))
+        _valider(con, chemin)
     finally:
         con.close()
     return groupe
@@ -546,7 +668,7 @@ def regler_match(fixture_key: str, buts_dom: int, buts_ext: int,
                 "UPDATE pari SET resultat = ?, buts_dom = ?, buts_ext = ?, "
                 "regle_a = ? WHERE id = ?",
                 (verdict, buts_dom, buts_ext, maintenant, int(pari_id)))
-        con.commit()
+        _valider(con, chemin)
         return len(lignes)
     finally:
         con.close()
@@ -560,7 +682,7 @@ def annuler_match(fixture_key: str, chemin: Path | None = None) -> int:
             "UPDATE pari SET resultat = 'annule', regle_a = ? "
             "WHERE fixture_key = ? AND resultat IS NULL",
             (_maintenant(), fixture_key))
-        con.commit()
+        _valider(con, chemin)
         return int(cur.rowcount)
     finally:
         con.close()
@@ -571,11 +693,12 @@ def annuler(pari_id: int, chemin: Path | None = None) -> None:
     con = _connexion(chemin)
     try:
         cur = con.execute(
-            "UPDATE pari SET resultat = 'annule', regle_a = ? WHERE id = ?",
-            (_maintenant(), int(pari_id)))
+            "UPDATE pari SET resultat = 'annule', regle_a = ? "
+            "WHERE id = ? AND utilisateur = ?",
+            (_maintenant(), int(pari_id), utilisateur_courant()))
         if cur.rowcount == 0:
             raise KeyError(f"pari {pari_id} introuvable")
-        con.commit()
+        _valider(con, chemin)
     finally:
         con.close()
 
@@ -585,9 +708,10 @@ def derregler(pari_id: int, chemin: Path | None = None) -> None:
     con = _connexion(chemin)
     try:
         con.execute("UPDATE pari SET resultat = NULL, buts_dom = NULL, "
-                    "buts_ext = NULL, regle_a = NULL WHERE id = ?",
-                    (int(pari_id),))
-        con.commit()
+                    "buts_ext = NULL, regle_a = NULL "
+                    "WHERE id = ? AND utilisateur = ?",
+                    (int(pari_id), utilisateur_courant()))
+        _valider(con, chemin)
     finally:
         con.close()
 
@@ -595,8 +719,9 @@ def derregler(pari_id: int, chemin: Path | None = None) -> None:
 def supprimer(pari_id: int, chemin: Path | None = None) -> None:
     con = _connexion(chemin)
     try:
-        con.execute("DELETE FROM pari WHERE id = ?", (int(pari_id),))
-        con.commit()
+        con.execute("DELETE FROM pari WHERE id = ? AND utilisateur = ?",
+                    (int(pari_id), utilisateur_courant()))
+        _valider(con, chemin)
     finally:
         con.close()
 
@@ -609,7 +734,10 @@ def _derive(d: pd.DataFrame) -> pd.DataFrame:
     """Ajoute statut, retour, profit et CLV. Aucun accès disque."""
     if len(d) == 0:
         return d.assign(statut=pd.Series(dtype=str), retour=pd.Series(dtype=float),
-                        profit=pd.Series(dtype=float), clv=pd.Series(dtype=float))
+                        profit=pd.Series(dtype=float), clv=pd.Series(dtype=float),
+                        valeur=pd.Series(dtype=float),
+                        esperance=pd.Series(dtype=float),
+                        cote_nette=pd.Series(dtype=float))
 
     # ``resultat`` porte le verdict, pas l'issue survenue : un score ne se
     # compare pas à un code de marché. Voir _migrer pour la conversion des
@@ -622,26 +750,52 @@ def _derive(d: pd.DataFrame) -> pd.DataFrame:
     d["statut"] = np.where(en_attente, "en attente",
                   np.where(annule, "annulé",
                   np.where(gagne, "gagné", "perdu")))
+
+    # ``cote`` est le prix affiché ; ``cote_nette`` est ce qu'on encaisse une
+    # fois la commission de la bourse prélevée sur le gain. Tout ce qui se
+    # chiffre en euros part de la seconde — un carnet qui paie la cote brute
+    # d'un exchange annonce un profit qui n'arrivera jamais sur le compte.
+    if "commission" not in d.columns:
+        d["commission"] = 0.0
+    d["commission"] = pd.to_numeric(d.commission, errors="coerce").fillna(0.0)
+    d["cote_nette"] = 1.0 + (d.cote - 1.0) * (1.0 - d.commission)
+
     # Un pari annulé est remboursé : la mise revient, le profit est nul.
     d["retour"] = np.where(en_attente, np.nan,
                   np.where(annule, d.mise,
-                  np.where(gagne, d.mise * d.cote, 0.0)))
+                  np.where(gagne, d.mise * d.cote_nette, 0.0)))
     d["profit"] = d.retour - d.mise
+
+    # Valeur au moment du pari, en % de la mise et en euros : ce que le
+    # carnet ANNONÇAIT en le prenant. La rapprocher du profit réalisé est la
+    # seule lecture honnête d'un ROI sur peu de paris — l'écart entre les
+    # deux est du bruit tant que N_MIN_ROI n'est pas atteint.
+    d["valeur"] = 100.0 * (d.p_modele * d.cote_nette - 1.0)
+    d["esperance"] = d.mise * (d.p_modele * d.cote_nette - 1.0)
 
     # CLV : de combien le prix pris bat-il la clôture. Positif = on a pris
     # mieux que le marché final.
+    #
+    # Le prix pris est compté NET, la clôture BRUTE, et ce n'est pas une
+    # étourderie : la clôture est une référence de prix, pas un pari qu'on
+    # aurait placé. La question à laquelle le CLV répond est « ce que j'ai
+    # encaissé bat-il le prix final du marché ? » — la commission fait
+    # partie de la réponse, sans quoi on se féliciterait d'un avantage que
+    # la bourse a déjà repris.
     with np.errstate(divide="ignore", invalid="ignore"):
         d["clv"] = np.where(d.cote_cloture.notna() & (d.cote_cloture > 0),
-                            100.0 * (d.cote / d.cote_cloture - 1.0), np.nan)
+                            100.0 * (d.cote_nette / d.cote_cloture - 1.0), np.nan)
     return d
 
 
 def paris(chemin: Path | None = None, depuis=None, jusqua=None,
           statut: str | None = None) -> pd.DataFrame:
-    """Le carnet, filtré sur la date de coup d'envoi."""
+    """Le carnet de l'utilisateur courant, filtré sur la date de coup d'envoi."""
     con = _connexion(chemin)
     try:
-        d = pd.read_sql("SELECT * FROM pari ORDER BY kickoff DESC, id DESC", con)
+        d = pd.read_sql("SELECT * FROM pari WHERE utilisateur = ? "
+                        "ORDER BY kickoff DESC, id DESC",
+                        con, params=(utilisateur_courant(),))
     finally:
         con.close()
 
@@ -718,6 +872,7 @@ def bilan(d: pd.DataFrame) -> dict:
         ic95 = float("nan")
 
     avec_clv = d[d.clv.notna()] if len(d) else d
+    esperance = float(regles.esperance.sum()) if n else 0.0
     return {
         "n": len(d),
         "n_regles": n,
@@ -731,6 +886,13 @@ def bilan(d: pd.DataFrame) -> dict:
         "roi_ic95": ic95,
         "roi_interpretable": n >= N_MIN_ROI,
         "n_manquants_roi": max(0, N_MIN_ROI - n),
+        # Valeur annoncée : Σ mise × (p × cote − 1) sur les paris réglés, et
+        # la même chose rapportée aux mises — le ROI qu'on ATTENDAIT.
+        "esperance": esperance,
+        "valeur_moyenne": (esperance / mises) if mises > 0 else float("nan"),
+        "n_valeur_positive": int((regles.valeur > 0).sum()) if n else 0,
+        "esperance_en_attente": (float(d.loc[d.resultat.isna(), "esperance"].sum())
+                                 if len(d) else 0.0),
         "n_clv": len(avec_clv),
         "clv_moyen": float(avec_clv.clv.mean()) if len(avec_clv) else float("nan"),
         "clv_median": float(avec_clv.clv.median()) if len(avec_clv) else float("nan"),
@@ -848,7 +1010,8 @@ def capturer_clotures(chemin: Path | None = None,
             con.execute("UPDATE pari SET cote_cloture = ?, book_cloture = ? "
                         "WHERE id = ?", (cote, book, int(r.id)))
             n += 1
-        con.commit()
+        if n:
+            _valider(con, chemin)
         return n
     finally:
         con.close()

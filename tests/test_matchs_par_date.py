@@ -201,3 +201,41 @@ def test_dispersion_nulle_avec_un_seul_book(bdd):
     res = ana.matchs_a_la_date("2026-10-01").resume.iloc[0]
     assert res.n_books == 1
     assert res.dispersion == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Le pari à valeur du jour
+# ---------------------------------------------------------------------------
+
+def _resume(**lignes):
+    base = {"verdict": "Rien à signaler", "ecart_prix": 0.0}
+    return pd.DataFrame([{**base, "fixture_key": k, **v} for k, v in lignes.items()])
+
+
+def test_pari_a_valeur_ne_retient_que_l_ecart_soutenu():
+    """Un écart isolé ou fragile, si grand soit-il, n'est pas une valeur."""
+    r = _resume(
+        a={"verdict": "Écart isolé — prudence", "ecart_prix": 9.0},
+        b={"verdict": "Fragile — dépend de la méthode", "ecart_prix": 7.0},
+        c={"verdict": ana.VERDICT_VALEUR, "ecart_prix": 1.5},
+        d={"verdict": ana.VERDICT_VALEUR, "ecart_prix": 2.5},
+    )
+    assert ana.pari_a_valeur(r).fixture_key == "d"
+
+
+def test_pari_a_valeur_absent_quand_rien_n_est_soutenu():
+    r = _resume(a={"verdict": "Écart isolé — prudence", "ecart_prix": 9.0},
+                b={"verdict": "Trop peu de books", "ecart_prix": np.nan})
+    assert ana.pari_a_valeur(r) is None
+    assert ana.pari_a_valeur(pd.DataFrame()) is None
+
+
+def test_pari_a_valeur_ignore_un_ecart_non_fini():
+    r = _resume(a={"verdict": ana.VERDICT_VALEUR, "ecart_prix": np.nan})
+    assert ana.pari_a_valeur(r) is None
+
+
+def test_pari_a_valeur_sur_le_consensus_indigent_du_jeu(bdd):
+    """Trois livres : aucun verdict positif possible, donc aucun pari à valeur."""
+    r = ana.matchs_a_la_date("2026-10-01")
+    assert ana.pari_a_valeur(r.resume) is None

@@ -9,8 +9,15 @@ disponible ; l'outil sert à le lire correctement, pas à prétendre le battre.
 
 from __future__ import annotations
 
+import sys
 from html import escape
 from pathlib import Path
+
+# Hébergé sans installation du paquet (decisions/0009) : ``src`` doit être
+# sur le chemin pour que ``odds`` s'importe. Sans effet quand il l'est déjà.
+_SRC = Path(__file__).resolve().parents[2]
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 
 import altair as alt
@@ -18,17 +25,48 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from odds.app import buts_ui, couverture_ui, paris_ui, theme
-from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_EV_MINI,
-                           SEUIL_PRIME_ISOLEE, analyser_livre, avec_cloture,
-                           carte_information_tardive, carte_marges, charger, cible,
-                           comparer_methodes, courbe_calibration, dates_disponibles,
-                           ece, fiabilite_historique, matchs_a_la_date,
+from odds import chemins, paper, stockage
+from odds.app import acces, buts_ui, couverture_ui, paris_ui, theme
+from odds.app.libelles import bookmaker, championnat, date_longue
+from odds.analysis.fiabilite import tranche_fiabilite
+from odds.analysis import (AGREGATS, AUTRE_INSTANT, N_BOOKS_MINI, SEUIL_COTE_SURE,
+                           SEUIL_EV_MINI, SEUIL_P_SUR, SEUIL_PRIME_ISOLEE,
+                           SOUTIEN_MINI, VERDICT_VALEUR, _niveau,
+                           analyser_livre, avec_cloture, carte_information_tardive,
+                           carte_marges, charger, cible, comparer_methodes,
+                           courbe_calibration, dates_disponibles, ece,
+                           fiabilite_historique, matchs_a_la_date, paris_surs,
                            probabilites_marche)
 
 st.set_page_config(page_title="Analyse des probabilités de marché",
                    page_icon="📊", layout="wide")
 theme.appliquer()
+
+# Qui entre (decisions/0009). En local : personne n'est demandé, rien ne
+# change. Hébergé : connexion, liste d'invités, et l'adresse devient
+# l'utilisateur du carnet pour toute cette exécution.
+utilisateur = acces.ouvrir()
+
+
+@st.cache_resource(show_spinner="Récupération de l'état…")
+def _etat_au_demarrage() -> list[str]:
+    """Une fois par processus : ramène l'état depuis le seau, s'il y en a un."""
+    return stockage.demarrer()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _collecte_a_jour() -> bool:
+    """Au plus toutes les cinq minutes : la base de collecte a-t-elle bougé ?
+
+    Le collecteur écrit ailleurs ; quand son empreinte change, on ramène le
+    fichier. Aucun cache de l'application ne dépend de cette base — les
+    matchs du jour sont relus à chaque exécution — donc rien à vider.
+    """
+    return stockage.rafraichir(chemins.BDD_COLLECTE)
+
+
+_etat_au_demarrage()
+_collecte_a_jour()
 
 COULEURS = theme.COULEURS_METHODE
 
@@ -52,19 +90,36 @@ except FileNotFoundError as e:
 
 clo = avec_cloture(df)
 
-st.sidebar.title("📊 Probabilités de marché")
-page = st.sidebar.radio("Page", ["Matchs par date", "Mes paris",
-                                 "Dévig d'un livre", "Calibration du marché",
-                                 "Cartographie", "Explorateur de matchs",
-                                 "Collecte en cours"])
-st.sidebar.caption(
-    f"{len(df):,} matchs · {len(clo):,} avec clôture Pinnacle\n\n"
-    f"{clo.date.min().date()} → {clo.date.max().date()}"
-)
-st.sidebar.warning(
-    "Outil personnel, **paris en papier uniquement**. Ni le modèle ni la "
-    "dérivation ne battent le prix de marché — mesuré sur le 1X2 (R8) comme "
-    "sur les buts (R9). Voir `research/RESULTS.md`.")
+st.sidebar.title("Probabilités de marché")
+acces.barre_laterale(utilisateur)
+
+# Navigation en deux groupes : l'outil (ce qu'on ouvre chaque jour) et la
+# recherche (ce qu'on consulte pour comprendre). Deux radios, une seule
+# sélection : choisir dans l'un vide l'autre.
+PAGES_OUTIL = ["Matchs par date", "Mes paris", "Collecte en cours"]
+PAGES_RECHERCHE = ["Dévig d'un livre", "Calibration du marché", "Cartographie",
+                   "Explorateur de matchs"]
+
+
+def _naviguer(groupe: str) -> None:
+    autre = "nav_recherche" if groupe == "nav_outil" else "nav_outil"
+    if st.session_state.get(groupe) is not None:
+        st.session_state[autre] = None
+
+
+if "nav_outil" not in st.session_state:
+    st.session_state["nav_outil"] = "Matchs par date"
+    st.session_state["nav_recherche"] = None
+st.sidebar.radio("Outil", PAGES_OUTIL, key="nav_outil",
+                 on_change=_naviguer, args=("nav_outil",))
+st.sidebar.radio("Recherche", PAGES_RECHERCHE, key="nav_recherche",
+                 on_change=_naviguer, args=("nav_recherche",))
+page = (st.session_state.get("nav_outil") or st.session_state.get("nav_recherche")
+        or "Matchs par date")
+
+# Les pages qui ont des réglages experts les posent ici, repliés, sous la
+# navigation et avant les crédits.
+reglages_sidebar = st.sidebar.container()
 
 
 # --- compteur de crédits The Odds API --------------------------------------
@@ -83,24 +138,27 @@ try:
     _c = _credits()
 except Exception as _e:
     _c = None
-    st.sidebar.caption(f"⚠️ Compteur de crédits indisponible : {_e}")
+    st.sidebar.caption(f"Compteur de crédits indisponible : {_e}")
 
 if _c:
     st.sidebar.divider()
-    st.sidebar.markdown("**Crédits The Odds API**")
+    st.sidebar.caption(f"**Crédits The Odds API** · {_c['restants']:,} restants "
+                       f"sur {_c['total']:,} ce mois-ci")
     st.sidebar.progress(min(1.0, _c["part_utilisee"]))
-    cg, cd = st.sidebar.columns(2)
-    cg.metric("Restants", f"{_c['restants']:,}")
-    cd.metric("Utilisés", f"{_c['utilises']:,}")
-    st.sidebar.caption(f"sur {_c['total']:,} ce mois-ci · lecture gratuite")
+
+# Pied de barre : le cadrage, vrai sans être crié.
+st.sidebar.divider()
+st.sidebar.caption(
+    f"{len(df):,} matchs · {len(clo):,} avec clôture Pinnacle · "
+    f"{clo.date.min().date()} → {clo.date.max().date()}")
+st.sidebar.caption(
+    "Outil personnel, paris en papier uniquement. Aucun modèle ici ne bat le "
+    "prix de marché, ni sur le 1X2 (R8) ni sur les buts (R9) : l'outil sert à "
+    "lire le prix, pas à le battre.")
 
 
 # ==========================================================================
 if page == "Matchs par date":
-    st.title("Matchs par date")
-    st.caption("Choisissez une date : l'analyse est calculée automatiquement pour tous les "
-               "matchs du jour.")
-
     dispo = dates_disponibles()
     collecte_jours = sorted(dispo["collecte"])
     aujourdhui = pd.Timestamp.now().date()
@@ -117,16 +175,44 @@ if page == "Matchs par date":
     # retrouve enfermé dans le passé sans explication.
     max_selectionnable = max(defaut, hist_max, aujourdhui + pd.Timedelta(days=21).to_pytimedelta())
 
-    f1, f2 = st.columns([1, 2])
-    jour = f1.date_input("Date", value=defaut,
-                         min_value=pd.Timestamp(dispo["historique"][0]).date(),
-                         max_value=max_selectionnable)
-    if jour == aujourdhui:
-        f1.caption("📅 Aujourd'hui")
-    methode = f2.selectbox("Méthode de dévig", ["shin", "power", "odds_ratio", "proportional"])
+    # Réglage expert hors du chemin principal : le verdict « écart soutenu »
+    # exige le même signe sous les quatre méthodes, ce choix ne le change
+    # donc pas. Il vit dans la barre latérale, replié, défaut Shin.
+    with reglages_sidebar, st.expander("Réglages avancés"):
+        methode = st.selectbox(
+            "Méthode de dévig", ["shin", "power", "odds_ratio", "proportional"],
+            help="Le verdict « écart soutenu » exige le même signe sous les quatre "
+                 "méthodes : ce choix déplace les chiffres, pas la décision.")
+        # prereg 0006 : les deux seuils de « sûr et payant ». Réglables parce
+        # qu'ils se contraignent l'un l'autre — la cote juste d'un favori à p
+        # vaut 1/p — et que le bon compromis se lit sur la page, pas dans le
+        # code. Le défaut du premier est la borne du niveau « Élevée » de la
+        # table de confiance ; le déplacer change le niveau affiché.
+        # En points de pourcentage : un curseur de 0,55 à 0,92 s'affiche
+        # « 1 % » sous tous les formats entiers de Streamlit.
+        p_min_sur = st.slider(
+            "« Sûr » : probabilité minimale (%)", 55, 92, int(100 * SEUIL_P_SUR), 1,
+            help="Le défaut est le seuil de la confiance « élevée ». La table de "
+                 "fiabilité mesure ce que vaut ce niveau : à 70 % annoncés, "
+                 "l'issue s'est produite 74,5 % du temps sur 5 028 matchs ; "
+                 "à 80 %, 83,6 % sur 2 174.") / 100.0
+        cote_min_sure = st.slider(
+            "« Payant » : cote nette minimale", 1.05, 2.00, SEUIL_COTE_SURE, 0.01,
+            help="Le gain en dessous duquel le pari ne vous intéresse pas. La cote "
+                 "juste d'un favori à 70 % vaut 1,43, à 80 % 1,25 : tant que ce "
+                 "plancher reste sous la cote juste, c'est l'écart au consensus "
+                 "qui décide, pas lui.")
 
-    if collecte_jours:
-        f2.caption("Cotes collectées disponibles pour : " + ", ".join(collecte_jours[-6:]))
+    # En-tête : la date en clair est le titre ; le sélecteur et le filtre de
+    # championnats sont à sa droite. Le filtre est rempli plus bas, une fois
+    # les matchs du jour connus.
+    e1, e2, e3 = st.columns([2.4, 1, 1.6], vertical_alignment="bottom")
+    jour = e2.date_input(
+        "Date", value=defaut, min_value=pd.Timestamp(dispo["historique"][0]).date(),
+        max_value=max_selectionnable,
+        help=("Cotes collectées disponibles pour : " + ", ".join(collecte_jours[-6:]))
+        if collecte_jours else None)
+    e1.title(date_longue(jour) + (" · aujourd'hui" if jour == aujourdhui else ""))
 
     # --- fraîcheur du flux amont ------------------------------------------
     # Une journée vide vient presque toujours de la source, pas de nous :
@@ -137,22 +223,19 @@ if page == "Matchs par date":
     except Exception:
         fx = pd.DataFrame()
 
+    # La fraîcheur va dans la ligne de statut ; seul un flux en retard mérite
+    # un bandeau. La publication par à-coups est expliquée là où elle se
+    # voit : sur une journée vide.
+    flux_txt = ""
     if len(fx):
         pub = fx.last_modified_dt.max()
         couv_max = fx.date_max.max()
         age = float(fx.age_heures.max())
-        msg = (f"**Flux amont publié le {pub:%a %d %b %H:%M UTC}** "
-               f"(il y a {age:.0f} h) — couvre jusqu'au {couv_max}.")
+        flux_txt = f"flux publié il y a {age:.0f} h, couvre jusqu'au {couv_max}"
         if fx.perime.any():
-            st.error(msg + " Le flux semble **en retard** : vérifiez `logs/collect.err`.")
-        elif pd.Timestamp(couv_max).date() < pd.Timestamp.now().date():
-            st.warning(
-                msg + "\n\nfootball-data publie ses fixtures **par à-coups** : une fois en "
-                "milieu de semaine, une fois avant le week-end. Entre deux publications, "
-                "aucune date à venir n'apparaît. Le collecteur tourne toutes les heures et "
-                "prendra la prochaine publication automatiquement.")
-        else:
-            st.caption(msg)
+            st.error(f"**Le flux amont semble en retard** : publié le "
+                     f"{pub:%a %d %b %H:%M UTC}, il y a {age:.0f} h. "
+                     "Vérifiez `logs/collect.err`.")
 
     with st.spinner("Calcul…"):
         r = matchs_a_la_date(jour, methode)
@@ -177,86 +260,365 @@ if page == "Matchs par date":
     res_tout, det = r.resume, r.detail
     historique = r.source == "historique"
 
-    # --- filtre championnat ------------------------------------------------
+    # --- filtre championnat, dans l'en-tête --------------------------------
     ligues = sorted(res_tout.league.astype(str).unique())
-    choisies = st.multiselect(
-        f"Championnats ({len(ligues)} ce jour-là)", ligues, default=ligues,
+    choisies = e3.multiselect(
+        f"Championnats ({len(ligues)})", ligues, default=ligues, format_func=championnat,
         help="Vide = tous les championnats.")
     res = res_tout[res_tout.league.astype(str).isin(choisies)] if choisies else res_tout
     res = res.reset_index(drop=True)
-
-    if historique:
-        st.info(f"**Source : historique** — {len(res)} matchs affichés "
-                f"sur {len(res_tout)} ce jour-là. Cotes de clôture Pinnacle, résultat connu.")
-    else:
-        fournisseur = r.fournisseur or "football-data"
-        nom = {"odds-api": "The Odds API", "football-data": "football-data.co.uk"}.get(
-            fournisseur, fournisseur)
-        st.success(f"**Source : collecte propre — {nom}** — {len(res)} matchs affichés "
-                   f"sur {len(res_tout)} collectés, jusqu'à {int(res_tout.n_books.max())} "
-                   "bookmakers par match. Dernière cote observée pour chacun.")
-        if fournisseur == "odds-api":
-            st.caption("Couverture limitée aux championnats de `ODDS_API_SPORTS` ayant un match "
-                       "dans les 36 h — c'est ce qui tient dans le budget de crédits gratuit.")
-        else:
-            st.caption("⚠️ football-data ne publie ses fixtures que deux fois par semaine : "
-                       "pour une date future, ce n'est pas nécessairement la totalité de la "
-                       "journée. Configurez The Odds API pour une couverture continue "
-                       "(`uv run odds config`).")
 
     if len(res) == 0:
         st.warning("Aucun championnat sélectionné.")
         st.stop()
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Matchs", len(res))
-    m2.metric("Marge médiane", f"{res.marge.median():.2f} %")
-    m3.metric("Books médian", f"{int(res.n_books.median())}")
-    m4.metric("Dispersion médiane", f"{res.dispersion.median():.2f} pts",
-              help="Écart-type de P(1) entre bookmakers. Élevé = le marché est en désaccord.")
+    # --- une ligne de statut à la place de cinq bandeaux --------------------
+    # Source, volume, fraîcheur et les médianes qui décrivent la journée. Un
+    # bandeau coloré n'apparaît que si quelque chose est anormal.
+    if historique:
+        statut = (f"Historique · cotes de clôture Pinnacle, résultat connu · "
+                  f"{len(res)} matchs sur {len(res_tout)} ce jour-là")
+    else:
+        fournisseur = r.fournisseur or "football-data"
+        nom = {"odds-api": "The Odds API", "football-data": "football-data.co.uk"}.get(
+            fournisseur, fournisseur)
+        statut = (f"{nom} · {len(res)} matchs sur {len(res_tout)} collectés · "
+                  f"jusqu'à {int(res_tout.n_books.max())} bookmakers · "
+                  f"marge médiane {res.marge.median():.2f} % · "
+                  f"dispersion médiane {res.dispersion.median():.2f} pt")
+        if fournisseur == "football-data":
+            statut += (" · fixtures publiées deux fois par semaine, journée "
+                       "peut-être incomplète")
+    if flux_txt:
+        statut += " · " + flux_txt
+    st.caption(statut)
 
-    # --- pronostic et confiance (section principale) -----------------------
-    st.subheader("Pronostic le plus probable et confiance")
-    st.caption("Lecture du marché, marge retirée. La colonne « réussite historique » indique "
-               "à quelle fréquence ce niveau de probabilité s'est **réellement** vérifié sur "
-               "les 150 626 matchs de l'historique. Usage descriptif et pédagogique.")
-
-    NIV_ICONE = {"Très élevée": "🟢", "Élevée": "🔵", "Modérée": "🟡",
-                 "Faible": "🟠", "Très faible": "🔴"}
     lib = {"1": "Domicile", "N": "Nul", "2": "Extérieur"}
+
+    nom_book = bookmaker
+
+    def nom_issue(r, code: str) -> str:
+        return {"1": r.home_team, "N": "Match nul", "2": r.away_team}[code]
+
+    # Libellé unique par match : c'est la clé du sélecteur « Détail d'un
+    # match », et ce que le bouton d'une carte y dépose.
+    libelles = (res.kickoff.str[11:16] + " · " + res.home_team + " – " + res.away_team
+                + " (" + res.league.astype(str).map(championnat) + ")")
+
+    def _choisir(libelle: str, origine: dict | None = None) -> None:
+        st.session_state["match_choisi"] = libelle
+        # D'où vient ce pari : prereg 0006 §5 demande que les paris pris au
+        # titre de « sûr et payant » soient suivis à part, sans quoi leur CLV
+        # se noierait dans celui des écarts de prix. Le formulaire n'inscrit
+        # la marque que si l'issue finalement choisie est bien celle de la
+        # carte : l'utilisateur reste libre d'en prendre une autre.
+        st.session_state["origine_pari"] = origine
+
+    def statut_issue(r) -> tuple[str, str, bool]:
+        """Dit en clair si l'issue visée par le prix est le favori du marché.
+
+        Une cote au-dessus du consensus tombe souvent sur un outsider : sans
+        cette ligne, « Elche CF · +3,3 % » se lit comme un pronostic de
+        victoire, ce qu'il n'est pas. Renvoie l'étiquette courte, le détail
+        chiffré et ``True`` si l'issue est le favori du marché.
+        """
+        p = 100 * r.p_prix
+        if r.issue_prix == r.issue_probable:
+            return "Favori du marché", f"{p:.0f} % pour le marché", True
+        return ("Outsider",
+                f"{p:.0f} % pour le marché · favori : "
+                f"{nom_issue(r, r.issue_probable)} {100 * r.p_probable:.0f} %", False)
+
+    # --- la décision d'abord ------------------------------------------------
+    # La page répond à « qu'est-ce que je parie aujourd'hui ? » : la réponse
+    # vient en tête, une carte par écart soutenu. Le tableau et le détail
+    # suivent, comme preuve. Les écarts fragiles ou isolés sont nommés et
+    # écartés en une ligne atténuée : un +9 % rouge ne doit pas voler le
+    # regard au +3 % vert qui, lui, tient.
+    if not historique:
+        # Règle d'affichage choisie par l'utilisateur (2026-09-18) : parmi
+        # les écarts soutenus — donc à espérance positive et robuste — le
+        # plus probable d'abord, même si son espérance est la plus faible.
+        # L'espérance filtre, la probabilité ordonne.
+        prises = (res[res.verdict == VERDICT_VALEUR]
+                  .sort_values(["p_prix", "ecart_prix"], ascending=[False, False]))
+        bruit = res[(res.verdict != VERDICT_VALEUR) & np.isfinite(res.ecart_prix)
+                    & (res.ecart_prix > 0)
+                    & res.verdict.isin(["Écart isolé — prudence",
+                                        "Fragile — dépend de la méthode"])]
+        n_p = len(prises)
+
+        def proposition(proba: float, cote_nette: float, robuste: bool,
+                        n_books: int) -> dict | None:
+            """Proposition du moteur de prereg §4 pour une issue et son prix.
+
+            C'est ici que la probabilité entre en jeu : à espérance égale,
+            Kelly mise moins sur l'issue improbable, et la confiance mesurée
+            sur la tranche de probabilité module encore la mise.
+            """
+            try:
+                b = paper.bankroll()
+                tr = tranche_fiabilite(float(proba), methode)
+                return paper.proposer_mise(
+                    bankroll=b["courante"], p=float(proba), cote=float(cote_nette),
+                    exposition=b["exposition"], n_hist=int(tr.n),
+                    n_books=int(n_books), ev_robuste=bool(robuste), p_cotee=True)
+            except Exception:
+                return None
+
+        def mise_proposee(p) -> dict | None:
+            """Proposition pour l'issue visée par le prix."""
+            return proposition(p.p_prix, p.cote_nette_prix, p.ev_robuste, p.n_books)
+
+        # --- sûr et payant (prereg 0006) --------------------------------
+        # Ce que l'utilisateur vient chercher d'abord : un favori net, payé
+        # au-dessus du consensus. Les deux seuils se contraignent — la cote
+        # juste d'un favori à p est 1/p — et la page le dit quand elle ne
+        # trouve rien, au lieu de laisser croire à une panne.
+        surs = paris_surs(res, p_min_sur, cote_min_sure)
+        # Ce que le seuil coûte, dit en paris et pas en points : « 1 sur 4
+        # perd » se lit, « 25,5 % d'échec » se survole. Mesuré sur la
+        # tranche qui COMMENCE au seuil — les bornes sont ouvertes à gauche,
+        # lire p_min tel quel tomberait dans la tranche du dessous — et
+        # jamais estimé ; sans historique on ne dit rien.
+        try:
+            tr_seuil = tranche_fiabilite(float(p_min_sur) + 1e-9, methode)
+            echoue = 1.0 - float(tr_seuil.reussite)
+            n_seuil = f"{int(tr_seuil.n):,}".replace(",", " ")
+            perd = (f" Au seuil, 1 pari sur {round(1 / echoue)} perd "
+                    f"(mesuré : {100 * echoue:.1f} % d'échec sur {n_seuil} matchs "
+                    f"entre {100 * float(tr_seuil.borne_inf):.0f} et "
+                    f"{100 * float(tr_seuil.borne_sup):.0f} %)."
+                    if 0 < echoue < 1 and int(tr_seuil.n) else "")
+        except Exception:
+            perd = ""
+        theme.eyebrow(
+            f"Sûr et payant · confiance {_niveau(p_min_sur).lower()} "
+            f"(probabilité ≥ {100 * p_min_sur:.0f} %) et cote nette ≥ {cote_min_sure:.2f}"
+            + (f" · {len(surs)} match{'s' if len(surs) > 1 else ''}" if len(surs)
+               else " · rien aujourd'hui"),
+            "info" if len(surs) else "",
+            sous_titre="Le favori du marché, quand un livre le paie au-dessus du "
+                       "consensus des autres. Trié du plus sûr au moins sûr." + perd)
+        if len(surs):
+            for debut in range(0, len(surs), 3):
+                cols = st.columns(3)
+                for col, (i, p) in zip(cols, surs.iloc[debut:debut + 3].iterrows()):
+                    try:
+                        tr = tranche_fiabilite(float(p.p_sure), methode)
+                        mesure = (f"mesuré : {100 * float(tr.reussite):.1f} % de "
+                                  f"réussite sur {int(tr.n):,} matchs".replace(",", " ")
+                                  if tr is not None and int(tr.n) else "")
+                    except Exception:
+                        # Historique absent (installation neuve) : on ne
+                        # remplace pas la mesure par une estimation.
+                        mesure = ""
+
+                    prop = proposition(p.p_sure, p.cote_sure_nette,
+                                       p.ev_robuste_sur, p.n_books)
+                    note = (f"mise proposée {prop['mise']:.2f} € · " if prop else "")
+                    note += (f"cote juste {1 / p.p_sure:.2f} · "
+                             f"{int(p.soutien_sur)} books au prix · "
+                             f"{p.verdict_sur.lower()} "
+                             f"({p.ev_min_sur:+.1f} → {p.ev_max_sur:+.1f} % "
+                             "selon la méthode)")
+                    with col:
+                        st.markdown(theme.carte_sure(
+                            championnat(p.league), p.kickoff[11:16],
+                            f"{p.home_team} – {p.away_team}",
+                            nom_issue(p, p.issue_sure), p.cote_sure,
+                            nom_book(p.book_sur), p.p_sure, note, mesure=mesure,
+                            ev=p.ecart_sur, nette=p.cote_sure_nette),
+                            unsafe_allow_html=True)
+                        st.button("Préparer le pari", key=f"sur_{p.fixture_key}",
+                                  on_click=_choisir,
+                                  args=(libelles[i],
+                                        {"fixture_key": p.fixture_key,
+                                         "issue": p.issue_sure,
+                                         "regle": "0006",
+                                         "seuils": (p_min_sur, cote_min_sure)}),
+                                  width="stretch")
+        else:
+            # Pourquoi c'est vide : l'arithmétique d'abord, le contournement
+            # ensuite. Une page vide sans motif se lit comme une panne.
+            juste = 1.0 / p_min_sur
+            detente = max(0.55, p_min_sur - 0.05)
+            n_detente = len(paris_surs(res, detente, cote_min_sure))
+            if cote_min_sure >= juste - 1e-9:
+                # Le plancher de cote est au-dessus de la cote juste : la
+                # règle demande qu'un livre paie mieux que le prix juste.
+                texte = (
+                    f"Aucun favori à {100 * p_min_sur:.0f} % ou plus n'est payé "
+                    f"{cote_min_sure:.2f} au-dessus du consensus aujourd'hui. "
+                    f"**Ce n'est pas une panne, c'est de l'arithmétique** : la cote "
+                    f"juste d'un favori à {100 * p_min_sur:.0f} % vaut "
+                    f"{juste:.2f}. Exiger en plus {cote_min_sure:.2f} revient à "
+                    "demander qu'un livre paie ce favori **à son prix juste ou "
+                    "mieux** — et un livre vit de ne pas le faire.")
+            else:
+                # Le plancher est sous la cote juste : il ne gêne pas. Ce
+                # qui manque, c'est un livre réel au-dessus du consensus.
+                texte = (
+                    f"Aucun favori à {100 * p_min_sur:.0f} % ou plus n'est payé "
+                    "au-dessus du consensus des autres livres aujourd'hui, chez un "
+                    f"bookmaker réel. La cote juste à {100 * p_min_sur:.0f} % vaut "
+                    f"{juste:.2f} : le plancher de {cote_min_sure:.2f} n'écarte rien, "
+                    "c'est l'écart positif qui manque — **le cas ordinaire**, un "
+                    "livre vit de payer le favori sous son prix.")
+            if n_detente:
+                texte += (f" À {100 * detente:.0f} %, il y en a {n_detente} : "
+                          "le curseur est dans les réglages avancés.")
+            theme.reserve(texte)
+
+        if n_p:
+            n_out = int((prises.issue_prix != prises.issue_probable).sum())
+            cadrage = ("Une carte est une cote plus haute que le consensus des autres "
+                       "bookmakers, pas un pronostic de victoire : ")
+            if n_out == n_p:
+                cadrage += ("l'issue retenue n'est le favori sur aucun de ces matchs, "
+                            "elle perdra le plus souvent, et c'est attendu.")
+            elif n_out:
+                cadrage += (f"sur {n_out} de ces {n_p} cartes, l'issue retenue n'est pas "
+                            "le favori du marché.")
+            else:
+                cadrage += "ici, elle coïncide avec le favori du marché."
+            theme.eyebrow(f"Meilleur écart, quelle que soit l'issue · {n_p} écart"
+                          f"{'s' if n_p > 1 else ''} "
+                          f"soutenu{'s' if n_p > 1 else ''}"
+                          + (" · du plus probable au moins probable" if n_p > 1 else ""),
+                          "pos", sous_titre=cadrage)
+            for debut in range(0, n_p, 3):
+                cols = st.columns(3)
+                for col, (i, p) in zip(cols, prises.iloc[debut:debut + 3].iterrows()):
+                    prop = mise_proposee(p)
+                    mise = (f"mise proposée {prop['mise']:.2f} € (Kelly × confiance "
+                            f"{prop['confiance']:.2f}) · " if prop else "")
+                    comm = (f"commission {100 * p.commission_prix:g} % déduite · "
+                            if p.commission_prix else "")
+                    note = (f"{mise}{comm}cote juste {1 / p.p_prix:.2f} · "
+                            f"{int(p.soutien_prix)} books au prix · stable sur les 4 "
+                            f"méthodes ({p.ev_min:+.1f} → {p.ev_max:+.1f} %)")
+                    statut, detail_statut, favori = statut_issue(p)
+                    with col:
+                        st.markdown(theme.carte_prise(
+                            championnat(p.league), p.kickoff[11:16],
+                            f"{p.home_team} – {p.away_team}", nom_issue(p, p.issue_prix),
+                            p.cote_prix, nom_book(p.book_prix), p.ecart_prix, note,
+                            statut=statut, statut_detail=detail_statut, favori=favori,
+                            nette=float(p.cote_nette_prix)),
+                            unsafe_allow_html=True)
+                        st.button("Préparer le pari", key=f"prep_{p.fixture_key}",
+                                  on_click=_choisir, args=(libelles[i],),
+                                  width="stretch")
+        else:
+            theme.eyebrow("Meilleur écart, quelle que soit l'issue · rien")
+            st.info(
+                "**Aucune cote à valeur soutenue aujourd'hui.** Aucun prix ne bat le "
+                f"consensus des autres livres d'au moins {SEUIL_EV_MINI:.0f} % de façon "
+                "stable et soutenue. Miser sur le favori ne crée pas de valeur : au "
+                "prix juste, l'espérance est nulle.")
+        if len(bruit):
+            morceaux = []
+            for _, e in bruit.sort_values("ecart_prix", ascending=False).iterrows():
+                motif = ("l'écart change de signe selon la méthode de dévig"
+                         if e.verdict.startswith("Fragile")
+                         else f"prix isolé, {int(e.soutien_prix)} book(s) seulement")
+                morceaux.append(
+                    f"<b>{escape(e.home_team)} – {escape(e.away_team)}</b>, "
+                    f"{escape(nom_issue(e, e.issue_prix))} à {e.cote_prix:.2f} "
+                    f"(<s>{e.ecart_prix:+.1f} %</s>) : {motif}")
+            st.markdown('<div class="od-ecarte">Écarté · ' + " · ".join(morceaux)
+                        + "</div>", unsafe_allow_html=True)
+
+    # Ordre de lecture des verdicts : la valeur soutenue d'abord, quel que
+    # soit son niveau. Un +9 % fragile trié au-dessus d'un +3 % soutenu
+    # ferait exactement ce que le verdict existe pour empêcher.
+    ORDRE_VERDICT = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
+                     "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
+                     "Rien à signaler": 4}
+
+    # Motif court d'un écart qui n'est pas une valeur.
+    MOTIF_BRUIT = {"Fragile — dépend de la méthode": "fragile",
+                   "Écart isolé — prudence": "isolé",
+                   "Trop peu de books": "trop peu de books"}
+
+    def cellule_valeur(r) -> str:
+        """Cellule « Valeur » : la couleur est réservée à l'écart soutenu.
+
+        Un écart fragile ou isolé est écrit en gris et barré : il reste
+        lisible (on sait pourquoi il n'est pas retenu) sans voler le regard.
+        """
+        if not np.isfinite(r.ecart_prix):
+            return '<span class="od-muted2">—</span>'
+        net = f" ({r.cote_nette_prix:.2f} net)" if r.commission_prix else ""
+        detail = escape(f"{nom_issue(r, r.issue_prix)} à {r.cote_prix:.2f}{net} · "
+                        f"{nom_book(r.book_prix)}")
+        if r.verdict == VERDICT_VALEUR:
+            return (theme.badge(f"{r.ecart_prix:+.1f} %", "pos")
+                    + f' <span class="od-muted" style="font-size:var(--fs-xs);">{detail}</span>')
+        motif = MOTIF_BRUIT.get(r.verdict, "sous le seuil")
+        chiffre = f"{r.ecart_prix:+.1f} %"
+        if r.verdict in MOTIF_BRUIT:
+            chiffre = f"<s>{chiffre}</s>"
+        return (f'<span class="od-muted2 od-num">{chiffre}</span> '
+                f'<span class="od-muted2" style="font-size:var(--fs-xs);">{motif} · {detail}</span>')
+
+    # --- tous les matchs du jour : la preuve, après la décision ---------------
+    # La pédagogie (ce que « valeur » veut dire, d'où vient la confiance) est
+    # dans les volets repliés sous le tableau, pas au-dessus.
+    st.divider()
     a_confiance = "confiance" in res.columns
 
+    def deux_lignes(haut: str, bas: str) -> str:
+        """Cellule à deux niveaux : l'essentiel, puis le contexte en petit."""
+        return (f"<div>{escape(haut)}</div>"
+                f'<div class="od-muted2" style="font-size:var(--fs-xs);">{escape(bas)}</div>')
+
     if a_confiance:
-        res = res.sort_values("p_probable", ascending=False).reset_index(drop=True)
-        issue_txt = [
-            {"1": r.home_team, "N": "Match nul", "2": r.away_team}[r.issue_probable]
-            for _, r in res.iterrows()]
+        tri = st.radio(
+            "Trier par", ["Valeur", "Probabilité", "Heure"], horizontal=True,
+            key="tri_matchs",
+            help="« Valeur » : le match dont une cote bat le plus le consensus des "
+                 "autres livres en tête — c'est ce qui départage deux paris, et ce "
+                 "n'est pas l'issue la plus probable. « Probabilité » : le pronostic "
+                 "du marché le plus sûr en tête.")
+        if tri == "Valeur":
+            # Même ordre que les cartes : verdict d'abord, puis, à verdict
+            # égal, la probabilité de l'issue visée par le prix.
+            res = (res.assign(_o=res.verdict.map(ORDRE_VERDICT).fillna(9))
+                      .sort_values(["_o", "p_prix", "ecart_prix"],
+                                   ascending=[True, False, False], na_position="last")
+                      .drop(columns="_o").reset_index(drop=True))
+        elif tri == "Probabilité":
+            res = res.sort_values("p_probable", ascending=False).reset_index(drop=True)
+        else:
+            res = res.sort_values("kickoff").reset_index(drop=True)
+
+        # Sept colonnes : ce qui départage deux paris, rien d'autre. Les
+        # statistiques historiques du niveau de probabilité (réussite, ± pts,
+        # échec, n) vivent dans le détail du match, onglet « Historique ».
         prono = pd.DataFrame({
-            "Confiance": [theme.badge(c, theme.TONS_CONFIANCE.get(c, "outline"))
-                          for c in res.confiance],
             "Heure": res.kickoff.str[11:16],
-            "Champ.": [theme.badge(c) for c in res.league.astype(str)],
-            "Domicile": res.home_team,
-            "Extérieur": res.away_team,
-            "Probabilités (1 · N · 2)": [theme.barre_1n2(a, b, c) for a, b, c
-                                         in zip(res.p_1, res.p_N, res.p_2)],
-            "Pronostic": issue_txt,
-            "Marché %": (100 * res.p_probable).map("{:.1f}".format),
-            "Réussite hist. %": (100 * res.reussite_hist).map("{:.1f}".format),
-            "± pts": (100 * res.ic95_hist).map("{:.1f}".format),
-            "Échec hist. %": (100 * res.echoue_hist).map("{:.1f}".format),
-            "n hist.": res.n_hist.map("{:,}".format),
+            "Match": [deux_lignes(f"{h} – {a}", championnat(l)) for h, a, l
+                      in zip(res.home_team, res.away_team, res.league)],
+            "1 · N · 2": [theme.barre_1n2(a, b, c) for a, b, c
+                          in zip(res.p_1, res.p_N, res.p_2)],
+            "Pronostic du marché": [deux_lignes(nom_issue(r, r.issue_probable),
+                                                f"{100 * r.p_probable:.1f} % · confiance "
+                                                f"{r.confiance.lower()}")
+                                    for _, r in res.iterrows()],
+            "Cote vs consensus": [cellule_valeur(r) for _, r in res.iterrows()],
             "Books": res.n_books,
         })
         prono.insert(0, "Pari", paris_ui.marque_paris(res.fixture_key))
-        colonnes_html = ["Pari", "Confiance", "Champ.",
-                         "Probabilités (1 · N · 2)"]
+        colonnes_html = ["Pari", "Match", "1 · N · 2", "Pronostic du marché",
+                         "Cote vs consensus"]
         if historique and "score" in res.columns:
             juste = (res.resultat.map({"H": "1", "D": "N", "A": "2"})
                      == res.issue_probable)
             # Position relative : le tableau gagne et perd des colonnes selon
             # le contexte, des index en dur se décalent en silence.
-            ou = prono.columns.get_loc("Marché %")
+            ou = prono.columns.get_loc("Books")
             prono.insert(ou, "Score", res.score.to_numpy())
             prono.insert(ou + 1, "Résultat", res.resultat.map(
                 {"H": "Domicile", "D": "Nul", "A": "Extérieur"}).to_numpy())
@@ -265,23 +627,50 @@ if page == "Matchs par date":
             colonnes_html.append("Vu juste")
 
         with st.container(border=True):
-            theme.titre_section("Matchs du jour")
-            theme.tableau(
-                prono, html=colonnes_html,
-                aligne_droite=["Marché %", "Réussite hist. %", "± pts",
-                               "Échec hist. %", "n hist.", "Books"],
-                classes={"Heure": "od-mono"})
+            theme.titre_section(f"Les {len(res)} matchs du jour")
+            theme.tableau(prono, html=colonnes_html, aligne_droite=["Books"],
+                          classes={"Heure": "od-mono"})
 
-        meilleur = res.iloc[0]
+        # Le pari à valeur est déjà en tête de page ; ici, une seule ligne
+        # atténuée pour rappeler que le plus probable n'est pas le plus rentable.
+        meilleur = res.loc[res.p_probable.idxmax()]
         nom = {"1": meilleur.home_team, "N": "le match nul",
                "2": meilleur.away_team}[meilleur.issue_probable]
-        st.info(
-            f"**Le pronostic le plus sûr du jour : {nom}** "
-            f"({meilleur.home_team} – {meilleur.away_team}), donné à "
-            f"{100 * meilleur.p_probable:.1f} % par le marché. "
-            f"Historiquement, ce niveau se vérifie **{100 * meilleur.reussite_hist:.1f} %** "
-            f"du temps (n = {meilleur.n_hist:,}) — donc il échoue quand même "
-            f"**{100 * meilleur.echoue_hist:.1f} %** des fois.")
+        st.caption(
+            f"Le pronostic le plus sûr du jour, **{nom}** ({meilleur.home_team} – "
+            f"{meilleur.away_team}), est donné à {100 * meilleur.p_probable:.1f} % ; ce "
+            f"niveau se vérifie {100 * meilleur.reussite_hist:.1f} % du temps "
+            f"(n = {meilleur.n_hist:,}). Le plus sûr n'est pas le plus rentable : au prix "
+            "juste, l'espérance est nulle.")
+        if historique:
+            st.caption("Valeur non mesurable sur une date historique : une seule cote "
+                       "(clôture Pinnacle), donc pas de consensus d'autres livres à battre.")
+
+        with st.expander("Ce que « valeur » veut dire ici — et ce qu'elle ne dit pas"):
+            st.markdown(f"""
+La **valeur** d'un pari est son espérance par euro misé : `p × cote − 1`. Elle est positive
+quand le prix pris dépasse la cote juste `1 / p`. C'est elle qui départage deux paris — un
+favori à 80 % coté 1,20 vaut **−4 %**, un outsider à 24 % coté 4,40 vaut **+5,6 %**. La
+probabilité dit ce qui est probable ; la valeur dit ce qui vaut d'être pris. Kelly n'en est
+qu'une mise à l'échelle : même signe, même seuil.
+
+Ici, `p` est le **consensus dévigé des autres bookmakers**, recalculé sans le livre qui affiche
+le prix (sinon il tirerait la médiane vers lui et masquerait son propre écart). La valeur mesure
+donc que **ce prix bat les autres opérateurs** — pas qu'il bat la vérité. Aucun modèle de ce
+projet ne bat le marché (R8, R9) ; ce qui reste, et qui est réel, c'est de prendre le meilleur
+prix quand il existe.
+
+Trois filtres séparent une valeur d'une cote périmée, et seuls les trois réunis donnent le
+badge vert **« Écart soutenu »** :
+
+| filtre | seuil | pourquoi |
+|---|---|---|
+| écart au consensus | ≥ {SEUIL_EV_MINI:.0f} % | en deçà, le bruit domine |
+| soutien | ≥ {SOUTIEN_MINI} livres à 1 % du meilleur prix, et pas plus de {SEUIL_PRIME_ISOLEE:.0f} % au-dessus du deuxième | un prix isolé est presque toujours périmé ou erroné |
+| robustesse | même signe sous Shin, power, odds ratio et proportionnelle | sous 5 % de probabilité, les méthodes divergent de 16,6 % (R3) |
+
+Un consensus de moins de {N_BOOKS_MINI} livres ne permet aucun verdict.
+""")
 
         with st.expander("D'où vient le score de confiance"):
             st.markdown("""
@@ -308,7 +697,7 @@ Deux enseignements de cette mesure :
                          alt.Tooltip("n:Q", title="n")])
             diag = alt.Chart(pd.DataFrame({"x": [33, 95]})).mark_line(
                 strokeDash=[6, 4], color="#52525b").encode(x="x:Q", y="x:Q")
-            st.altair_chart((diag + ch).properties(height=300), use_container_width=True)
+            st.altair_chart((diag + ch).properties(height=300), width="stretch")
             st.dataframe(
                 tbl.assign(p_moyenne=100 * tbl.p_moyenne, reussite=100 * tbl.reussite,
                            ic95=100 * tbl.ic95)[["bin", "n", "p_moyenne", "reussite", "ic95"]]
@@ -316,7 +705,7 @@ Deux enseignements de cette mesure :
                                     "reussite": "Observé %", "ic95": "± pts"})
                    .style.format({"Annoncé %": "{:.1f}", "Observé %": "{:.1f}",
                                   "± pts": "{:.1f}", "n": "{:,}"}),
-                use_container_width=True, hide_index=True)
+                width="stretch", hide_index=True)
     else:
         st.warning("Historique indisponible : le score de confiance ne peut pas être calculé. "
                    "Lancez `uv run odds ingest`.")
@@ -328,29 +717,24 @@ Deux enseignements de cette mesure :
                    "bookmakers ? C'est une observation sur le **désaccord entre opérateurs**, "
                    "sans rapport avec la probabilité qu'une issue se produise.")
 
-        ORDRE = {"Écart soutenu": 0, "Écart isolé — prudence": 1,
-                 "Fragile — dépend de la méthode": 2, "Trop peu de books": 3,
-                 "Rien à signaler": 4}
         TON = {"Écart soutenu": "pos", "Écart isolé — prudence": "neu",
                "Fragile — dépend de la méthode": "neg",
                "Trop peu de books": "outline", "Rien à signaler": "outline"}
-
-        def nom_book(b):
-            return {"_max_marche": "⌀ meilleur du marché",
-                    "_moyenne_marche": "⌀ moyenne marché"}.get(b, b)
 
         def ton_ecart(v):
             # Seuil de ±1 point, comme la maquette (gapClass).
             return "pos" if v >= 1 else ("neg" if v <= -1 else "neu")
 
-        rp = res.assign(_o=res.verdict.map(ORDRE).fillna(9)).sort_values(
+        rp = res.assign(_o=res.verdict.map(ORDRE_VERDICT).fillna(9)).sort_values(
             ["_o", "kickoff"]).reset_index(drop=True)
         theme.tableau(pd.DataFrame({
             "Constat": [theme.badge(v, TON.get(v, "outline")) for v in rp.verdict],
             "Match": rp.home_team + " – " + rp.away_team,
             "Issue visée": rp.issue_prix.map(lib),
             "Cote": rp.cote_prix.map("{:.2f}".format),
-            "Chez": rp.book_prix.map(nom_book),
+            "Chez": [nom_book(b) + (f" · {n:.2f} net" if c else "")
+                     for b, n, c in zip(rp.book_prix, rp.cote_nette_prix,
+                                        rp.commission_prix)],
             "Écart %": [theme.badge(f"{v:+.2f}", ton_ecart(v)) for v in rp.ecart_prix],
             "min %": rp.ev_min.map("{:+.2f}".format),
             "max %": rp.ev_max.map("{:+.2f}".format),
@@ -370,112 +754,157 @@ non le marché — c'est systématiquement le cas sur les issues à faible proba
     # Titre et sélecteur sur une même ligne, comme la maquette.
     t1, t2 = st.columns([1, 1], vertical_alignment="center")
     t1.subheader("Détail d'un match")
+    # `res` a pu être retrié depuis le calcul des libellés : on les recalcule
+    # dans l'ordre courant. Le choix vit dans la session pour qu'un bouton
+    # « Préparer le pari » puisse l'imposer ; par défaut, le pari à la plus
+    # forte valeur, sinon le premier de la liste.
     libelles = (res.kickoff.str[11:16] + " · " + res.home_team + " – " + res.away_team
-                + " (" + res.league.astype(str) + ")")
-    choix = t2.selectbox("Match", libelles.tolist(), label_visibility="collapsed")
+                + " (" + res.league.astype(str).map(championnat) + ")")
+    options = libelles.tolist()
+    if st.session_state.get("match_choisi") not in options:
+        # Par défaut, la première carte : l'écart soutenu le plus probable.
+        soutenus = res[(res.verdict == VERDICT_VALEUR) & np.isfinite(res.p_prix)]
+        defaut_match = (options[int(soutenus.p_prix.idxmax())]
+                        if not historique and len(soutenus) else options[0])
+        st.session_state["match_choisi"] = defaut_match
+    choix = t2.selectbox("Match", options, key="match_choisi",
+                         label_visibility="collapsed")
     ligne = res.loc[libelles == choix].iloc[0]
     fk = ligne.fixture_key
 
-    nom_prono = {"1": ligne.home_team, "N": "Match nul",
-                 "2": ligne.away_team}[ligne.issue_probable]
-    if a_confiance:
-        st.markdown(f"### {NIV_ICONE.get(ligne.confiance, '')} Pronostic : **{nom_prono}** "
-                    f"· confiance {ligne.confiance.lower()}")
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Probabilité de marché", f"{100 * ligne.p_probable:.1f} %",
-                  lib[ligne.issue_probable], delta_color="off")
-        d2.metric("Réussite historique", f"{100 * ligne.reussite_hist:.1f} %",
-                  f"± {100 * ligne.ic95_hist:.1f} pts", delta_color="off")
-        d3.metric("Échoue quand même", f"{100 * ligne.echoue_hist:.1f} %",
-                  "du temps", delta_color="off")
-        d4.metric("Échantillon", f"{ligne.n_hist:,}", "matchs historiques",
-                  delta_color="off")
-        st.caption("La réussite historique est mesurée sur les matchs de l'historique dont la "
-                   "probabilité annoncée tombait dans la même tranche. Elle n'est pas propre à "
-                   "ce match : elle dit ce que vaut, en moyenne, un pronostic à ce niveau.")
-    else:
-        st.markdown(f"### Pronostic : **{nom_prono}** "
-                    f"({100 * ligne.p_probable:.1f} %)")
+    # En-tête du détail : le match, une ligne de contexte, et la décision si
+    # l'écart est soutenu. Le reste est réparti en onglets, « Parier » ouvert
+    # par défaut : c'est l'action, les autres sont des preuves.
+    nom_prono = nom_issue(ligne, ligne.issue_probable)
+    st.markdown(f"### {ligne.home_team} – {ligne.away_team}")
+    contexte = (f"{championnat(ligne.league)} · {ligne.kickoff[11:16]} · "
+                f"{int(ligne.n_books)} bookmakers"
+                f" · pronostic du marché : **{nom_prono}** ({100 * ligne.p_probable:.1f} %")
+    contexte += (f", confiance {ligne.confiance.lower()})" if a_confiance else ")")
+    st.caption(contexte)
+    if ligne.verdict == VERDICT_VALEUR:
+        statut, detail_statut, favori = statut_issue(ligne)
+        net = (f" ({ligne.cote_nette_prix:.2f} net de commission)"
+               if ligne.commission_prix else "")
+        st.success(f"**Cote à valeur soutenue** : {nom_issue(ligne, ligne.issue_prix)} à "
+                   f"{ligne.cote_prix:.2f} chez {nom_book(ligne.book_prix)}{net}, "
+                   f"{ligne.ecart_prix:+.1f} % d'espérance par euro misé, "
+                   f"{int(ligne.soutien_prix)} livres au prix, signe stable sur les "
+                   f"quatre méthodes. {statut.lower().capitalize()} : {detail_statut}"
+                   + ("." if favori else
+                      " — ce pari perdra le plus souvent, l'espérance vient du prix."))
 
-    buts_ui.bloc_buts(ligne, r.totaux)
+    o_parier, o_buts, o_couvrir, o_books, o_hist = st.tabs([
+        "Parier", "Marchés de buts", "Couvrir plusieurs issues",
+        f"{int(ligne.n_books)} bookmakers", "Historique du niveau"])
 
-    paris_ui.formulaire_pari(ligne, det, methode, source=r.fournisseur,
-                             totaux=r.totaux)
+    with o_parier:
+        paris_ui.formulaire_pari(ligne, det, methode, source=r.fournisseur,
+                                 totaux=r.totaux)
 
-    couverture_ui.bloc_couverture(ligne, det, methode, source=r.fournisseur,
-                                  totaux=r.totaux)
+    with o_buts:
+        buts_ui.bloc_buts(ligne, r.totaux)
 
-    with st.expander("Dispersion des prix sur ce match"):
+    with o_couvrir:
+        couverture_ui.bloc_couverture(ligne, det, methode, source=r.fournisseur,
+                                      totaux=r.totaux)
+
+    with o_hist:
+        if a_confiance:
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Favori du marché", f"{100 * ligne.p_probable:.1f} %",
+                      nom_prono, delta_color="off")
+            d2.metric("Réussite historique", f"{100 * ligne.reussite_hist:.1f} %",
+                      f"± {100 * ligne.ic95_hist:.1f} pts", delta_color="off")
+            d3.metric("Échoue quand même", f"{100 * ligne.echoue_hist:.1f} %",
+                      "du temps", delta_color="off")
+            d4.metric("Échantillon", f"{ligne.n_hist:,}", "matchs historiques",
+                      delta_color="off")
+            st.caption("La réussite historique est mesurée sur les matchs de l'historique "
+                       "dont la probabilité annoncée tombait dans la même tranche. Elle "
+                       "n'est pas propre à ce match : elle dit ce que vaut, en moyenne, un "
+                       "pronostic à ce niveau. La valeur, elle, est propre à ce match et à "
+                       "ce prix.")
+        else:
+            st.caption("Historique indisponible : lancez `uv run odds ingest`.")
+
+    with o_books:
         e1, e2, e3 = st.columns(3)
         e1.metric("Issue visée par le prix", lib[ligne.issue_prix],
                   f"{ligne.ecart_prix:+.2f} %", delta_color="off")
         e2.metric("Meilleure cote", f"{ligne.cote_prix:.2f}",
-                  nom_book(ligne.book_prix), delta_color="off")
+                  nom_book(ligne.book_prix)
+                  + (f" · {ligne.cote_nette_prix:.2f} net" if ligne.commission_prix
+                     else ""), delta_color="off")
         e3.metric("Selon la méthode", f"{ligne.ev_min:+.1f} → {ligne.ev_max:+.1f} %",
                   "stable" if ligne.ev_robuste else "change de signe",
                   delta_color="normal" if ligne.ev_robuste else "inverse")
         if str(ligne.book_prix).startswith("_"):
             st.caption("⌀ = agrégat de marché, pas un bookmaker. Voir le tableau livre par livre.")
         if not ligne.ev_robuste:
-            st.error("L'écart change de signe selon la méthode de dévig : il mesure le choix "
-                     "de méthode, pas le marché. Typique des issues à faible probabilité.")
+            theme.reserve("L'écart change de signe selon la méthode de dévig : il mesure "
+                          "le choix de méthode, pas le marché. Typique des issues à faible "
+                          "probabilité.", "grave")
         elif ligne.verdict == "Écart isolé — prudence":
-            st.warning(f"Prix {ligne.prime_prix:+.1f} % au-dessus du deuxième, affiché par "
-                       f"{int(ligne.soutien_prix)} bookmaker(s) seulement — presque toujours "
-                       "une cote périmée ou erronée.")
+            theme.reserve(f"Prix {ligne.prime_prix:+.1f} % au-dessus du deuxième, affiché "
+                          f"par {int(ligne.soutien_prix)} bookmaker(s) seulement — presque "
+                          "toujours une cote périmée ou erronée.", "attention")
         elif ligne.verdict == "Écart soutenu":
             st.success(f"Écart soutenu par {int(ligne.soutien_prix)} bookmakers et stable sur "
                        "les quatre méthodes de dévig.")
-    d = det[det.fixture_key == fk].copy()
-    d["type"] = np.where(d.bookmaker.isin(AGREGATS), "agrégat",
-                np.where(d.bookmaker.isin(AUTRE_INSTANT), "autre instant", "book"))
-    d = d.sort_values(["type", "bookmaker"])
 
-    couleurs_books = theme.palette_books(d.bookmaker)
+        d = det[det.fixture_key == fk].copy()
+        d["type"] = np.where(d.bookmaker.isin(AGREGATS), "agrégat",
+                    np.where(d.bookmaker.isin(AUTRE_INSTANT), "autre instant", "book"))
+        d = d.sort_values(["type", "bookmaker"])
 
-    c1, c2 = st.columns([1.3, 1])
-    with c1:
-        theme.tableau(
-            pd.DataFrame({
-                # Colonne rendue en HTML : le nom vient de l'API et doit
-                # être échappé comme toute autre chaîne externe.
-                "Bookmaker": [theme.pastille(b, couleurs_books) + " " + escape(str(b))
-                              for b in d.bookmaker],
-                "Type": d.type,
-                "Cote 1": d.cote_1.map("{:.2f}".format),
-                "Cote N": d.cote_N.map("{:.2f}".format),
-                "Cote 2": d.cote_2.map("{:.2f}".format),
-                "P(1)": (100 * d.p_1).map("{:.1f}".format),
-                "P(N)": (100 * d.p_N).map("{:.1f}".format),
-                "P(2)": (100 * d.p_2).map("{:.1f}".format),
-                "Marge %": d.marge.map("{:.2f}".format),
-            }), html=["Bookmaker"],
-            aligne_droite=["Cote 1", "Cote N", "Cote 2", "P(1)", "P(N)", "P(2)",
-                           "Marge %"],
-            classes={"Type": "od-muted"})
-        st.caption("« autre instant » = même bookmaker relevé plus tôt. Exclu du consensus "
-                   "et du meilleur prix : ce n'est pas un concurrent, et cette cote n'est "
-                   "plus disponible.")
-    with c2:
-        books = d[d.type == "book"]
-        longd = books.melt(
-            id_vars="bookmaker", value_vars=["p_1", "p_N", "p_2"],
-            var_name="issue", value_name="p")
-        longd["issue"] = longd.issue.map({"p_1": "1", "p_N": "N", "p_2": "2"})
-        noms = books.bookmaker.tolist()
-        ch = alt.Chart(longd).mark_circle(
-            size=110, opacity=.88, stroke=theme.BG, strokeWidth=1).encode(
-            x=alt.X("p:Q", title="Probabilité (marge retirée)", axis=alt.Axis(format="%")),
-            y=alt.Y("issue:N", title=None, sort=["1", "N", "2"]),
-            # Une couleur fixe par bookmaker, comme la légende de la maquette.
-            color=alt.Color("bookmaker:N", title="Bookmaker", legend=None,
-                            scale=alt.Scale(domain=noms,
-                                            range=[couleurs_books[str(b)] for b in noms])),
-            tooltip=["bookmaker", "issue", alt.Tooltip("p:Q", format=".1%")],
-        ).properties(height=220)
-        st.altair_chart(ch, use_container_width=True)
-        theme.legende_books(noms, couleurs_books)
-        st.caption("Dispersion entre bookmakers. Points resserrés = marché d'accord.")
+        couleurs_books = theme.palette_books(d.bookmaker)
+
+        c1, c2 = st.columns([1.3, 1])
+        with c1:
+            theme.tableau(
+                pd.DataFrame({
+                    # Colonne rendue en HTML : le nom vient de l'API et doit
+                    # être échappé comme toute autre chaîne externe.
+                    "Bookmaker": [theme.pastille(b, couleurs_books) + " " + escape(str(b))
+                                  for b in d.bookmaker],
+                    "Type": d.type,
+                    "Cote 1": d.cote_1.map("{:.2f}".format),
+                    "Cote N": d.cote_N.map("{:.2f}".format),
+                    "Cote 2": d.cote_2.map("{:.2f}".format),
+                    "P(1)": (100 * d.p_1).map("{:.1f}".format),
+                    "P(N)": (100 * d.p_N).map("{:.1f}".format),
+                    "P(2)": (100 * d.p_2).map("{:.1f}".format),
+                    "Marge %": d.marge.map("{:.2f}".format),
+                }), html=["Bookmaker"],
+                aligne_droite=["Cote 1", "Cote N", "Cote 2", "P(1)", "P(N)", "P(2)",
+                               "Marge %"],
+                classes={"Type": "od-muted"})
+            st.caption("« autre instant » = même bookmaker relevé plus tôt. Exclu du "
+                       "consensus et du meilleur prix : ce n'est pas un concurrent, et "
+                       "cette cote n'est plus disponible.")
+        with c2:
+            books = d[d.type == "book"]
+            longd = books.melt(
+                id_vars="bookmaker", value_vars=["p_1", "p_N", "p_2"],
+                var_name="issue", value_name="p")
+            longd["issue"] = longd.issue.map({"p_1": "1", "p_N": "N", "p_2": "2"})
+            noms = books.bookmaker.tolist()
+            ch = alt.Chart(longd).mark_circle(
+                size=110, opacity=.88, stroke=theme.BG, strokeWidth=1).encode(
+                x=alt.X("p:Q", title="Probabilité (marge retirée)",
+                        axis=alt.Axis(format="%")),
+                y=alt.Y("issue:N", title=None, sort=["1", "N", "2"]),
+                # Une couleur fixe par bookmaker, comme la légende de la maquette.
+                color=alt.Color("bookmaker:N", title="Bookmaker", legend=None,
+                                scale=alt.Scale(domain=noms,
+                                                range=[couleurs_books[str(b)]
+                                                       for b in noms])),
+                tooltip=["bookmaker", "issue", alt.Tooltip("p:Q", format=".1%")],
+            ).properties(height=220)
+            st.altair_chart(ch, width="stretch")
+            theme.legende_books(noms, couleurs_books)
+            st.caption("Dispersion entre bookmakers. Points resserrés = marché d'accord.")
 
 
 # ==========================================================================
@@ -520,7 +949,7 @@ elif page == "Dévig d'un livre":
                               ["Brute 1/c", "Shin", "Power", "Odds ratio", "Proportionnelle"]}
                              | {"Cote": "{:.2f}", "Cote juste (Shin)": "{:.3f}"})
                .background_gradient(cmap=theme.GRADIENT_BLEU, subset=["Shin"]),
-            use_container_width=True, hide_index=True)
+            width="stretch", hide_index=True)
         st.caption("Le tableau défile horizontalement si la fenêtre est étroite.")
 
     st.divider()
@@ -541,7 +970,7 @@ elif page == "Dévig d'un livre":
     with g1:
         st.dataframe(biais.style.format({"Écart (points)": "{:+.3f}",
                                          "Écart relatif (%)": "{:+.2f}"}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
     with g2:
         ch = alt.Chart(biais).mark_bar().encode(
             x=alt.X("Écart relatif (%):Q", title="Erreur relative de la proportionnelle (%)"),
@@ -550,7 +979,7 @@ elif page == "Dévig d'un livre":
                                 alt.value(theme.ROUGE), alt.value(theme.BLEU)),
             tooltip=["Issue", "Écart (points)", "Écart relatif (%)"],
         ).properties(height=40 * len(biais) + 40)
-        st.altair_chart(ch, use_container_width=True)
+        st.altair_chart(ch, width="stretch")
 
     pire = int(np.argmax(np.abs(r["biais_proportionnel_rel"].to_numpy())))
     st.info(
@@ -580,7 +1009,8 @@ elif page == "Calibration du marché":
     d = d[(d.date.dt.year >= annees[0]) & (d.date.dt.year <= annees[1])]
 
     if len(d) < 200:
-        st.warning(f"Seulement {len(d)} matchs sur ce filtre. Résultat non interprétable.")
+        theme.reserve(f"Seulement {len(d)} matchs sur ce filtre. Résultat non "
+                      "interprétable.", "attention")
         st.stop()
 
     y = cible(d)
@@ -608,7 +1038,7 @@ elif page == "Calibration du marché":
                      alt.Tooltip("observe:Q", format=".1f", title="observé %"),
                      alt.Tooltip("n:Q", title="n")])
         ligne = base.mark_line(color=theme.BLEU, opacity=.5).encode(x="annonce:Q", y="observe:Q")
-        st.altair_chart((diag + ligne + pts).properties(height=440), use_container_width=True)
+        st.altair_chart((diag + ligne + pts).properties(height=440), width="stretch")
         st.caption("Les points sur la diagonale = marché parfaitement calibré. "
                    "La taille du point reflète l'effectif du bin.")
 
@@ -620,7 +1050,7 @@ elif page == "Calibration du marché":
                                        "écart pts": "{:+.2f}"})
                         .background_gradient(cmap=theme.GRADIENT_DIVERGENT,
                                         subset=["écart pts"], vmin=-5, vmax=5),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
     if code == "(tous)":
         st.subheader("Comparaison des méthodes de dévig")
@@ -628,7 +1058,7 @@ elif page == "Calibration du marché":
                    "mais il décide d'où l'on croirait avoir de l'edge.")
         st.dataframe(comparer_methodes(df).style.format(
             {"brier": "{:.6f}", "log_loss": "{:.6f}", "ece": "{:.5f}"}),
-            use_container_width=True, hide_index=True)
+            width="stretch", hide_index=True)
 
 
 # ==========================================================================
@@ -648,11 +1078,11 @@ elif page == "Cartographie":
             tooltip=["country", "league", alt.Tooltip("marge:Q", format=".2f"),
                      alt.Tooltip("n:Q", title="matchs")],
         ).properties(height=22 * len(m) + 30)
-        st.altair_chart(ch, use_container_width=True)
+        st.altair_chart(ch, width="stretch")
         st.dataframe(m.assign(depuis=m.depuis.dt.year, jusqua=m.jusqua.dt.year)
                       [["league_code", "country", "league", "n", "depuis", "jusqua", "marge"]]
                       .style.format({"marge": "{:.2f} %"}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         st.warning("**Attention à l'interprétation.** Une marge élevée ne signale pas un marché "
                    "exploitable. La corrélation mesurée entre marge et retard d'un modèle "
                    "Dixon-Coles vaut +0,057 — nulle. Une marge élevée traduit l'incertitude du "
@@ -674,12 +1104,12 @@ elif page == "Cartographie":
                          alt.Tooltip("information_tardive:Q", format=".5f"),
                          alt.Tooltip("n:Q", title="matchs")],
             ).properties(height=22 * len(t) + 30)
-            st.altair_chart(ch, use_container_width=True)
+            st.altair_chart(ch, width="stretch")
             st.dataframe(t[["league_code", "country", "league", "n", "brier_precoce",
                             "brier_cloture", "information_tardive"]].style.format(
                 {"brier_precoce": "{:.5f}", "brier_cloture": "{:.5f}",
                  "information_tardive": "{:.5f}"}),
-                use_container_width=True, hide_index=True)
+                width="stretch", hide_index=True)
             st.info("**Lecture.** Élevé = beaucoup d'information arrive tard, miser tôt est "
                     "risqué. Faible = le prix précoce est déjà quasi définitif, miser tôt "
                     "n'apporte rien. Le total mesuré ne dépasse jamais 0,006 de Brier — "
@@ -723,7 +1153,7 @@ elif page == "Explorateur de matchs":
                          | {c: "{:.2f}" for c in ["Cote 1", "Cote N", "Cote 2"]})
            .background_gradient(cmap=theme.GRADIENT_BLEU,
                                subset=["P(1) %", "P(N) %", "P(2) %"]),
-        use_container_width=True, hide_index=True, height=560)
+        width="stretch", hide_index=True, height=560)
 
     y = cible(d)
     st.caption(f"{len(d)} matchs · Brier du marché sur cette sélection : "
@@ -804,7 +1234,7 @@ elif page == "Collecte en cours":
                 y=alt.Y("credits:Q", title="Crédits consommés"),
                 tooltip=["jour", "credits", "passes"],
             ).properties(height=180)
-            st.altair_chart(ch, use_container_width=True)
+            st.altair_chart(ch, width="stretch")
 
         ecart = _c["utilises"] - int(conso.credits.sum() if len(conso) else 0)
         if ecart > 0:
@@ -827,7 +1257,7 @@ elif page == "Collecte en cours":
             "Statut": np.where(fx.perime, "⚠️ en retard", "✅ à jour"),
         })
         st.dataframe(vfx.style.format({"Âge (h)": "{:.1f}"}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         st.caption("football-data publie ses fixtures environ deux fois par semaine "
                    "(milieu de semaine, puis avant le week-end). Entre deux publications, "
                    "aucune nouvelle date n'apparaît — ce n'est pas une panne du collecteur.")
@@ -838,14 +1268,14 @@ elif page == "Collecte en cours":
     b = r["bookmakers"].copy()
     b["rôle"] = np.where(b.bookmaker == "betfair_exchange", "benchmark",
                 np.where(b.bookmaker.str.startswith("_"), "agrégat", "book"))
-    st.dataframe(b, use_container_width=True, hide_index=True)
+    st.dataframe(b, width="stretch", hide_index=True)
     st.caption("**betfair_exchange** est le benchmark retenu en avant : "
                "prix réellement négociable, seul substitut sérieux à Pinnacle.")
 
     st.subheader("Dernières passes")
     runs["statut"] = np.where(runs.erreur.notna(), "⚠️ erreur", "✅")
     st.dataframe(runs[["run_id", "matchs", "lignes_vues", "lignes_ecrites", "statut", "erreur"]],
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("Mouvement des cotes")
@@ -880,6 +1310,6 @@ elif page == "Collecte en cours":
         tooltip=["observed_at:T", "bookmaker", "selection",
                  alt.Tooltip("odds:Q", format=".2f")],
     ).properties(height=380)
-    st.altair_chart(ch, use_container_width=True)
+    st.altair_chart(ch, width="stretch")
     st.caption("Seuls les CHANGEMENTS sont enregistrés : une cote stable ne "
                "produit pas de nouveau point.")

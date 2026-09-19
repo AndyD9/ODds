@@ -22,9 +22,10 @@ import pandas as pd
 import streamlit as st
 
 from odds import paper
-from odds.analysis import (AGREGATS, AUTRE_INSTANT, fiabilite_buts,
+from odds.analysis import (AGREGATS, AUTRE_INSTANT, VERDICT_VALEUR, fiabilite_buts,
                            tranche_fiabilite, tranche_fiabilite_buts)
-from odds.app import buts_ui, theme
+from odds.app import buts_ui, libelles, theme
+from odds.market import commission
 from odds.market.vocabulaire import selection_collectee
 from odds.models.football import buts
 
@@ -33,6 +34,26 @@ MOIS_FR = [None, "janvier", "février", "mars", "avril", "mai", "juin",
            "juillet", "août", "septembre", "octobre", "novembre",
            "décembre"]
 HORS_BOOK = set(AGREGATS) | set(AUTRE_INSTANT)
+
+# Ce qu'un verdict non soutenu doit dire au moment de parier sur l'issue
+# visée par l'écart de prix : la valeur affichée n'est alors pas une valeur.
+AVERTISSEMENT_VERDICT = {
+    "Écart isolé — prudence":
+        "L'écart de prix sur cette issue est porté par un seul bookmaker, nettement "
+        "au-dessus du deuxième meilleur prix : presque toujours une cote périmée ou "
+        "erronée, ou une limite de mise dérisoire. Vérifiez qu'elle est encore affichée.",
+    "Fragile — dépend de la méthode":
+        "L'écart de prix sur cette issue change de signe selon la méthode de dévig "
+        "(R3) : il mesure le choix de méthode, pas le marché. La confiance est divisée "
+        "par deux, et cette « valeur » n'en est pas une.",
+}
+
+
+def _badge_valeur(v: float, decimales: int = 1) -> str:
+    """Pastille d'espérance en % de la mise : verte si positive, rouge sinon."""
+    if pd.isna(v):
+        return "—"
+    return theme.badge(f"{v:+.{decimales}f} %", "pos" if v > 0 else ("neg" if v < 0 else "neu"))
 
 
 def _euros(x: float) -> str:
@@ -75,11 +96,26 @@ FAMILLES_PARI = {
 }
 
 
+def _nettes(offres: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute la cote encaissée et trie dessus.
+
+    Une bourse d'échange affiche presque toujours la cote la plus haute —
+    elle ne prend pas sa marge dans le prix — et se rembourse sur le gain.
+    Classer les offres sur la cote brute mettrait donc systématiquement
+    l'exchange en tête, y compris quand il paie moins.
+    """
+    if len(offres) == 0:
+        return offres.assign(nette=[], commission=[])
+    o = offres.copy()
+    o["commission"] = [commission.taux(b) for b in o.bookmaker]
+    o["nette"] = 1.0 + (o.cote - 1.0) * (1.0 - o.commission)
+    return o.sort_values("nette", ascending=False).reset_index(drop=True)
+
+
 def _offres_1x2(books: pd.DataFrame, code: str) -> pd.DataFrame:
     col = {"1": "cote_1", "N": "cote_N", "2": "cote_2"}[code]
-    return (books[["bookmaker", col]].dropna()
-            .rename(columns={col: "cote"})
-            .sort_values("cote", ascending=False))
+    return _nettes(books[["bookmaker", col]].dropna()
+                   .rename(columns={col: "cote"}))
 
 
 def _offres_totaux(totaux: pd.DataFrame | None, fk: str, code: str) -> pd.DataFrame:
@@ -89,7 +125,7 @@ def _offres_totaux(totaux: pd.DataFrame | None, fk: str, code: str) -> pd.DataFr
     lignes, et tous les totaux par équipe, n'ont aucun prix : la cote devra
     être saisie à la main.
     """
-    vide = pd.DataFrame(columns=["bookmaker", "cote"])
+    vide = pd.DataFrame(columns=["bookmaker", "cote", "nette", "commission"])
     if totaux is None or len(totaux) == 0:
         return vide
     paire = selection_collectee(code)
@@ -99,8 +135,7 @@ def _offres_totaux(totaux: pd.DataFrame | None, fk: str, code: str) -> pd.DataFr
                & ~totaux.bookmaker.astype(str).str.startswith("_")]
     if len(d) == 0:
         return vide
-    return (d[["bookmaker", "odds"]].rename(columns={"odds": "cote"})
-            .sort_values("cote", ascending=False).reset_index(drop=True))
+    return _nettes(d[["bookmaker", "odds"]].rename(columns={"odds": "cote"}))
 
 
 def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
@@ -128,7 +163,9 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
         if len(existants):
             deja = ", ".join(
                 f"{paper.libelle(r.issue, ligne.home_team, ligne.away_team)} "
-                f"à {r.cote:.2f}" for r in existants.itertuples())
+                f"à {r.cote:.2f}"
+                + (f" ({r.cote_nette:.2f} net)" if r.commission else "")
+                for r in existants.itertuples())
             st.info(f"**Déjà misé sur ce match :** {deja}.")
 
         f1, f2 = st.columns([1, 2])
@@ -147,24 +184,76 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
             # chiffres ; le formulaire ne peut pas être moins exigeant
             # qu'elle et proposer une mise sur une matrice qui ne
             # reproduit pas les prix qu'on lui a donnés.
-            st.error(
+            theme.reserve(
                 "La matrice de score ne reproduit pas les prix de ce match "
                 f"(écart {100 * imp.ecart_max:.2f} pts) : aucun pari sur un "
-                "marché de buts n'est proposé. Le 1X2 reste disponible.")
+                "marché de buts n'est proposé. Le 1X2 reste disponible.", "grave")
             return
         else:
             probas = {c: buts.probabilite(imp.matrice, c) for c in codes}
 
-        issue = f2.selectbox(
-            "Pari", codes, key=f"pari_issue_{fk}_{famille}",
-            format_func=lambda c: (
-                f"{paper.libelle(c, ligne.home_team, ligne.away_team)} · "
-                f"{100 * probas[c]:.1f} % · cote juste "
-                f"{1 / probas[c]:.2f}" if probas[c] > 0 else
-                paper.libelle(c, ligne.home_team, ligne.away_team)))
+        # La valeur de chaque issue AU MEILLEUR PRIX relevé, dans le menu
+        # même : c'est là qu'on choisit un pari plutôt qu'un autre, et c'est
+        # ce chiffre — pas la probabilité — qui départage.
+        def _offres(c):
+            return (_offres_1x2(books, c) if c in ("1", "N", "2")
+                    else _offres_totaux(totaux, fk, c))
 
-        offres = (_offres_1x2(books, issue) if issue in ("1", "N", "2")
-                  else _offres_totaux(totaux, fk, issue))
+        # Deux prix par issue : celui qu'on lit chez le livre (brut) et celui
+        # qu'on encaisse (net de commission). La valeur se calcule sur le
+        # second, toujours.
+        meilleures, meilleures_nettes = {}, {}
+        for c in codes:
+            o = _offres(c)
+            meilleures[c] = float(o.cote.iloc[0]) if len(o) else None
+            meilleures_nettes[c] = float(o.nette.iloc[0]) if len(o) else None
+
+        def _valeur_au_mieux(c):
+            """Espérance de l'issue au meilleur prix ENCAISSABLE, ou None."""
+            if meilleures_nettes[c] is None or probas[c] <= 0:
+                return None
+            return paper.valeur(probas[c], meilleures_nettes[c])
+
+        def _libelle_choix(c):
+            nom = paper.libelle(c, ligne.home_team, ligne.away_team)
+            if probas[c] <= 0:
+                return nom
+            txt = f"{nom} · {100 * probas[c]:.1f} % · cote juste {1 / probas[c]:.2f}"
+            v = _valeur_au_mieux(c)
+            if v is not None:
+                txt += f" · valeur {100 * v:+.1f} % à {meilleures[c]:.2f}"
+                if abs(meilleures_nettes[c] - meilleures[c]) > 5e-3:
+                    txt += f" ({meilleures_nettes[c]:.2f} net)"
+            return txt
+
+        # Par défaut, l'issue visée par l'écart soutenu : c'est elle qui a
+        # amené ici depuis la carte « à prendre », pas l'issue la plus probable.
+        defaut_issue = 0
+        if (famille.startswith("Résultat")
+                and getattr(ligne, "verdict", None) == VERDICT_VALEUR
+                and getattr(ligne, "issue_prix", None) in codes):
+            defaut_issue = codes.index(ligne.issue_prix)
+        issue = f2.selectbox("Pari", codes, index=defaut_issue,
+                             key=f"pari_issue_{fk}_{famille}",
+                             format_func=_libelle_choix)
+        avec_valeur = [c for c in codes if (_valeur_au_mieux(c) or 0) > 0]
+        if avec_valeur:
+            # Une valeur positive sur l'issue visée par l'écart de prix n'en
+            # est une que si le verdict la soutient : sinon on le dit dans la
+            # même phrase, pas trois écrans plus bas.
+            def _nom_qualifie(c):
+                nom = paper.libelle(c, ligne.home_team, ligne.away_team)
+                if (c in ("1", "N", "2") and c == getattr(ligne, "issue_prix", None)
+                        and getattr(ligne, "verdict", None) in AVERTISSEMENT_VERDICT):
+                    return f"{nom} (écart {'isolé' if 'isolé' in ligne.verdict else 'fragile'})"
+                return nom
+            f2.caption("À valeur positive au meilleur prix relevé : **"
+                       + ", ".join(_nom_qualifie(c) for c in avec_valeur) + "**.")
+        elif any(m is not None for m in meilleures.values()):
+            f2.caption("Aucune issue de ce marché n'a de valeur positive au meilleur "
+                       "prix relevé.")
+
+        offres = _offres(issue)
 
         if not famille.startswith("Résultat"):
             if contraint:
@@ -184,10 +273,16 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
                 step=0.01, key=f"pari_cote_{fk}_{issue}",
                 help="Pré-remplie avec le meilleur prix disponible chez un "
                      "bookmaker réel. Modifiable : c'est le prix que VOUS avez pris.")
+            def _libelle_book(b):
+                o = offres.loc[offres.bookmaker == b].iloc[0]
+                txt = f"{libelles.bookmaker(b)} · {float(o.cote):.2f}"
+                if o.commission:
+                    txt += f" → {float(o.nette):.2f} net ({100 * o.commission:g} %)"
+                return txt
+
             bookmaker = c3.selectbox(
                 "Chez", offres.bookmaker.tolist(), key=f"pari_book_{fk}_{issue}",
-                format_func=lambda b: f"{b} · "
-                f"{float(offres.loc[offres.bookmaker == b, 'cote'].iloc[0]):.2f}")
+                format_func=_libelle_book)
         else:
             # Aucun prix relevé : on ne prétend pas en connaître un. La cote
             # est celle que l'utilisateur a réellement vue chez son book, et
@@ -205,6 +300,35 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
                 key=f"pari_book_{fk}_{issue}",
                 help="Saisi à la main : ce marché n'apparaît dans aucun de nos "
                      "relevés.") or None
+
+        # --- d'où vient ce pari -------------------------------------------
+        # prereg 0006 §5 : les paris pris au titre de « sûr et payant » sont
+        # suivis à part. La marque n'est posée que si l'issue inscrite est
+        # bien celle de la carte qui a mené ici.
+        origine = st.session_state.get("origine_pari") or {}
+        note_regle = None
+        if (origine.get("regle") == "0006" and origine.get("fixture_key") == fk
+                and origine.get("issue") == issue):
+            pm, cm = origine.get("seuils", (0.0, 0.0))
+            note_regle = (f"prereg 0006 — sûr et payant (p ≥ {100 * pm:.0f} %, "
+                          f"cote nette ≥ {cm:.2f})")
+            st.caption(f"Pris au titre de la règle **sûr et payant** : "
+                       f"probabilité ≥ {100 * pm:.0f} %, cote nette ≥ {cm:.2f}. "
+                       "Le carnet le note, pour pouvoir juger cette règle "
+                       "séparément.")
+
+        # --- ce qu'on encaisse vraiment -----------------------------------
+        # La cote saisie est celle affichée chez le livre ; sur une bourse
+        # d'échange, la commission se prend sur le gain. Tout ce qui suit —
+        # espérance, Kelly, mise, carnet — travaille sur la cote nette.
+        taux_comm = commission.taux(bookmaker)
+        cote_nette = commission.cote_nette(cote, taux_=taux_comm)
+        if taux_comm:
+            st.caption(
+                f"**{libelles.bookmaker(bookmaker)}** est une bourse d'échange : "
+                f"{100 * taux_comm:g} % du gain lui revient. La cote "
+                f"{cote:.2f} paie donc comme un **{cote_nette:.2f}**, et c'est "
+                "sur ce prix que l'espérance et la mise sont calculées.")
 
         # --- proposition du moteur de prereg §4 ---------------------------
         p = probas[issue]
@@ -247,7 +371,7 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
             n_books_pari = min(n_books_pari, n_books_ou)
 
         prop = paper.proposer_mise(
-            bankroll=b["courante"], p=p, cote=cote, exposition=b["exposition"],
+            bankroll=b["courante"], p=p, cote=cote_nette, exposition=b["exposition"],
             n_hist=n_hist, n_books=n_books_pari,
             # `ev_robuste` ne qualifie que l'issue visée par l'écart de prix.
             # L'appliquer à une autre issue serait un emprunt abusif.
@@ -257,7 +381,14 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
             # totaux) ou dérivée du seul 1X2 ? R9 mesure l'écart.
             p_cotee=est_1x2 or contraint)
 
-        m1, m2, m3, m4 = st.columns(4)
+        ev = paper.valeur(p, cote_nette)
+        m0, m1, m2, m3, m4 = st.columns(5)
+        # Le delta porte le signe : Streamlit le colore en vert ou en rouge,
+        # ce qui fait de la valeur le seul chiffre coloré de la rangée.
+        m0.metric("Valeur", f"{100 * ev:+.1f} %",
+                  f"{100 * ev:+.2f} % de la mise en moyenne",
+                  help="p × cote − 1 : espérance par euro misé, contre la probabilité "
+                       "dévigée du consensus. Positive quand le prix bat la cote juste.")
         m1.metric("Kelly complet", f"{100 * prop['kelly']:+.1f} %",
                   "(p × cote − 1) / (cote − 1)", delta_color="off")
         m2.metric("f effectif", f"{100 * prop['f_effectif']:.2f} %",
@@ -279,9 +410,45 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
                 f"n = {int(tranche.n):,}) pour une probabilité annoncée de "
                 f"{100 * float(tranche.p_moyenne):.1f} %.".replace(",", " "))
         elif not est_1x2 and n_hist == 0:
-            st.error("Aucune tranche mesurée à ce niveau de probabilité pour "
-                     "ce marché : l'échantillon historique est trop mince. Le "
-                     "moteur ne propose rien tant qu'on n'a rien mesuré.")
+            theme.reserve("Aucune tranche mesurée à ce niveau de probabilité "
+                          "pour ce marché : l'échantillon historique est trop "
+                          "mince. Le moteur ne propose rien tant qu'on n'a rien "
+                          "mesuré.", "attention")
+
+        # --- pourquoi ce pari, en une phrase ------------------------------
+        prix = (f"{cote:.2f}" if not taux_comm
+                else f"{cote:.2f} ({cote_nette:.2f} net)")
+        if ev > 0:
+            texte = (f"**Pourquoi ce pari :** à {prix}, il rend en moyenne "
+                     f"**{100 * ev:+.1f} %** de la mise — le prix bat la cote juste "
+                     f"{1 / p:.2f}. C'est ce qui le distingue d'un pari « sur le "
+                     "favori » : la probabilité dit ce qui est probable, la valeur "
+                     "dit ce qui vaut d'être pris.")
+        else:
+            texte = (f"**Pas de valeur à ce prix :** {prix} est au niveau de la "
+                     f"cote juste {1 / p:.2f} ou en dessous, espérance "
+                     f"**{100 * ev:+.1f} %**. Un pari probable n'est pas un pari "
+                     "rentable ; le moteur ne propose rien, et c'est cohérent.")
+            if taux_comm and paper.valeur(p, cote) > 0:
+                texte += (" **Sans la commission, il en aurait :** c'est elle qui "
+                          "mange l'écart, pas le prix.")
+        # Pour le 1X2, le consensus recalculé SANS le livre au meilleur prix
+        # est la mesure honnête (le livre généreux tire la médiane vers lui).
+        p_loo = getattr(ligne, f"p_loo_{issue}", None) if est_1x2 else None
+        if p_loo is not None and pd.notna(p_loo) and float(p_loo) > 0:
+            ev_loo = paper.valeur(float(p_loo), cote_nette)
+            texte += (f" Consensus recalculé sans le livre au meilleur prix : "
+                      f"**{100 * ev_loo:+.1f} %**.")
+        st.markdown(texte)
+
+        verdict = getattr(ligne, "verdict", None)
+        if est_1x2 and issue == getattr(ligne, "issue_prix", None):
+            if verdict in AVERTISSEMENT_VERDICT:
+                st.warning(AVERTISSEMENT_VERDICT[verdict])
+            elif verdict == VERDICT_VALEUR:
+                st.success(f"**Écart soutenu** : {int(ligne.soutien_prix)} livres au prix, "
+                           "signe stable sur les quatre méthodes de dévig. C'est le pari "
+                           "à valeur de ce match.")
 
         if prop["plafond"] == "kelly":
             st.warning(prop["motif"])
@@ -297,17 +464,20 @@ def formulaire_pari(ligne, det: pd.DataFrame, methode: str,
                  "un moteur qui n'a pas été suivi.")
         if s2.button("Enregistrer le pari", type="primary",
                      disabled=(mise <= 0), key=f"pari_ok_{fk}_{issue}",
-                     use_container_width=True):
+                     width="stretch"):
             paper.enregistrer(
                 fixture_key=fk, kickoff=str(ligne.kickoff),
                 home_team=ligne.home_team, away_team=ligne.away_team,
                 issue=issue, cote=float(cote), p_modele=p, mise=float(mise),
-                bookmaker=bookmaker, league=str(ligne.league), source=source,
+                bookmaker=bookmaker, commission=taux_comm,
+                league=str(ligne.league), source=source,
                 methode=methode, mise_proposee=prop["mise"],
                 bankroll_avant=b["courante"], kelly_=prop["kelly"],
-                f_effectif=prop["f_effectif"], plafond=prop["plafond"])
-            st.success(f"Pari enregistré : **{nom_pari}** à {cote:.2f} "
-                       f"chez {bookmaker or 'book non précisé'}, {_euros(mise)}.")
+                f_effectif=prop["f_effectif"], plafond=prop["plafond"],
+                note=note_regle)
+            st.success(f"Pari enregistré : **{nom_pari}** à {prix} chez "
+                       f"{libelles.bookmaker(bookmaker) if bookmaker else 'book non précisé'}"
+                       f", {_euros(mise)}.")
             st.rerun()
 
         if mise <= 0:
@@ -369,7 +539,7 @@ def _reglement(en_attente: pd.DataFrame) -> None:
         "Reporté": False,
     })
     edite = st.data_editor(
-        saisie, hide_index=True, use_container_width=True,
+        saisie, hide_index=True, width="stretch",
         disabled=["fixture_key", "Match", "Coup d'envoi", "Paris", "Mise"],
         column_config={
             "fixture_key": None,
@@ -413,7 +583,7 @@ def _bilan(d: pd.DataFrame, libelle_periode: str) -> None:
     bi = paper.bilan(d)
 
     theme.titre_section(f"Bilan — {libelle_periode}")
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Paris réglés", f"{bi['n_regles']}",
               f"{bi['n_en_attente']} en attente", delta_color="off")
     k2.metric("Taux de réussite",
@@ -424,7 +594,15 @@ def _bilan(d: pd.DataFrame, libelle_periode: str) -> None:
               "—" if pd.isna(bi["roi_ic95"]) else f"± {100 * bi['roi_ic95']:.1f} pts",
               delta_color="off",
               help="Profit rapporté aux mises, avec son intervalle à 95 %.")
-    k4.metric("CLV moyen",
+    attendu = f"{bi['esperance']:+.2f} € attendus"
+    if bi["n_en_attente"]:
+        attendu += f" · {bi['esperance_en_attente']:+.2f} € en attente"
+    k4.metric("Valeur annoncée",
+              "—" if pd.isna(bi["valeur_moyenne"]) else f"{100 * bi['valeur_moyenne']:+.1f} %",
+              attendu, delta_color="off",
+              help="Σ mise × (p × cote − 1) rapporté aux mises : le ROI que le carnet "
+                   "ANNONÇAIT en prenant ces paris. À comparer au ROI réalisé.")
+    k5.metric("CLV moyen",
               "—" if pd.isna(bi["clv_moyen"]) else f"{bi['clv_moyen']:+.2f} %",
               "—" if pd.isna(bi["clv_ic95"]) else f"± {bi['clv_ic95']:.2f} pts",
               delta_color="off",
@@ -447,6 +625,15 @@ def _bilan(d: pd.DataFrame, libelle_periode: str) -> None:
             f"ROI n'est recevable ; il en manque {manque}{borne}. Sur cette "
             "taille d'échantillon, un ROI positif et un ROI négatif sont "
             "également compatibles avec une sélection sans aucune valeur.")
+
+    if bi["n_regles"] > 0:
+        st.caption(
+            f"Le carnet annonçait **{bi['esperance']:+.2f} €** d'espérance sur ces "
+            f"{bi['n_regles']} paris ({bi['n_valeur_positive']} à valeur positive) ; "
+            f"il a rendu **{bi['profit']:+.2f} €**. L'écart entre les deux est la "
+            "variance des résultats, pas un jugement sur la sélection : seule la "
+            "valeur annoncée est connue au moment de parier, et seul le CLV dit "
+            "ensuite si elle était réelle.")
 
     if bi["n_clv"] > 0:
         signe = "au-dessus" if bi["clv_moyen"] > 0 else "en dessous"
@@ -484,7 +671,7 @@ def _courbes(d: pd.DataFrame, b: dict) -> None:
                         scale=alt.Scale(zero=False)),
                 tooltip=[alt.Tooltip("pari:Q"), alt.Tooltip("bankroll:Q", format=".2f")])
             st.altair_chart((depart + ligne).properties(height=260),
-                            use_container_width=True)
+                            width="stretch")
 
     with g2:
         theme.titre_section("Distribution du CLV")
@@ -501,7 +688,7 @@ def _courbes(d: pd.DataFrame, b: dict) -> None:
             zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
                 strokeDash=[6, 4], color="#52525b").encode(x="x:Q")
             st.altair_chart((hist + zero).properties(height=260),
-                            use_container_width=True)
+                            width="stretch")
 
 
 def _couvertures(d: pd.DataFrame) -> None:
@@ -548,13 +735,23 @@ def _historique(d: pd.DataFrame) -> None:
         "N°": regles.id,
         "Coup d'envoi": regles.kickoff.str[:16],
         "Match": regles.home_team + " – " + regles.away_team,
-        "Pari": [escape(paper.libelle(c, d, e)) + (" " + theme.badge("couv.", "info")
-                                           if isinstance(g, str) and g else "")
-                 for c, d, e, g in zip(regles.issue, regles.home_team,
-                                       regles.away_team,
-                                       regles.groupe if "groupe" in regles.columns
-                                       else [None] * len(regles))],
-        "Cote": regles.cote.map("{:.2f}".format),
+        "Pari": [escape(paper.libelle(c, d, e))
+                 + (" " + theme.badge("couv.", "info")
+                    if isinstance(g, str) and g else "")
+                 + (" " + theme.badge("sûr et payant", "outline")
+                    if isinstance(n, str) and "0006" in n else "")
+                 for c, d, e, g, n in zip(regles.issue, regles.home_team,
+                                          regles.away_team,
+                                          regles.groupe if "groupe" in regles.columns
+                                          else [None] * len(regles),
+                                          regles.note if "note" in regles.columns
+                                          else [None] * len(regles))],
+        # Sur une bourse, la cote du ticket et celle qui a payé diffèrent :
+        # les deux sont là, sans quoi le profit de la ligne serait inexplicable.
+        "Cote": [f"{c:.2f}" if not k else f"{c:.2f} → {n:.2f}"
+                 for c, n, k in zip(regles.cote, regles.cote_nette,
+                                    regles.commission)],
+        "Valeur": [_badge_valeur(v) for v in regles.valeur],
         "Chez": regles.bookmaker.fillna("—"),
         "Mise": regles.mise.map("{:.2f}".format),
         "Score": [("—" if pd.isna(d) else f"{int(d)}–{int(e)}")
@@ -568,8 +765,8 @@ def _historique(d: pd.DataFrame) -> None:
                  theme.badge(f"{v:+.2f} %", "pos" if v > 0 else "neg"))
                 for v in regles.clv],
     })
-    theme.tableau(vue, html=["Pari", "Statut", "Profit", "CLV"],
-                  aligne_droite=["N°", "Cote", "Mise", "Score", "Profit",
+    theme.tableau(vue, html=["Pari", "Valeur", "Statut", "Profit", "CLV"],
+                  aligne_droite=["N°", "Cote", "Valeur", "Mise", "Score", "Profit",
                                  "Clôture", "CLV"],
                   classes={"Coup d'envoi": "od-mono", "Chez": "od-muted"})
 

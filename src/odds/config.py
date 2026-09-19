@@ -14,6 +14,7 @@ Règles de sûreté appliquées ici :
 from __future__ import annotations
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -30,7 +31,23 @@ REGLAGES = {
     "ODDS_API_REGIONS": ("Région des bookmakers", False, "eu"),
     "ODDS_API_MARKETS": ("Marchés", False, "h2h,totals"),
     "ODDS_API_BUDGET_JOUR": ("Budget de crédits par jour", False, "14"),
+    "COMMISSION_EXCHANGE": ("Commission des bourses d'échange, en % du gain "
+                            "net (vide = taux par défaut de chaque bourse)",
+                            False, None),
+    # --- hébergement (decisions/0009) — tout facultatif : vide = mode local
+    "SUPABASE_URL": ("URL du projet Supabase (copie distante de l'état)", False, None),
+    "SUPABASE_SERVICE_KEY": ("Clé de service Supabase", True, None),
+    "SUPABASE_BUCKET": ("Seau Storage qui reçoit les fichiers d'état", False, "etat"),
+    "ODDS_INVITES": ("Adresses autorisées à ouvrir l'application hébergée, "
+                     "séparées par des virgules", False, None),
+    "ODDS_PROPRIETAIRE": ("Adresse du propriétaire : son carnet est le carnet "
+                          "local historique", False, None),
 }
+
+
+# Secrets masqués à l'affichage mais dont l'absence n'est pas un manque : sans
+# eux, l'outil tourne en mode local (decisions/0009).
+SECRETS_FACULTATIFS = {"SUPABASE_SERVICE_KEY"}
 
 
 def _parser(texte: str) -> dict[str, str]:
@@ -59,9 +76,27 @@ def recharger() -> None:
     _depuis_fichier.cache_clear()
 
 
+def _depuis_secrets(cle: str) -> str | None:
+    """Les secrets Streamlit, seulement si Streamlit est déjà chargé.
+
+    Sur Community Cloud la configuration vit dans ``st.secrets``, pas dans
+    un .env. On ne l'importe jamais pour autant depuis la CLI : le module
+    n'est consulté que s'il est déjà en mémoire, donc depuis l'application.
+    Sans fichier de secrets, ``st.secrets`` lève ; c'est « rien ».
+    """
+    st = sys.modules.get("streamlit")
+    if st is None:
+        return None
+    try:
+        val = st.secrets.get(cle)
+    except Exception:
+        return None
+    return str(val) if val not in (None, "") else None
+
+
 def get(cle: str, defaut: str | None = None) -> str | None:
-    """Environnement du processus, puis .env, puis valeur par défaut."""
-    val = os.environ.get(cle) or _depuis_fichier().get(cle)
+    """Environnement du processus, puis .env, puis secrets Streamlit, puis défaut."""
+    val = os.environ.get(cle) or _depuis_fichier().get(cle) or _depuis_secrets(cle)
     if val:
         return val
     if defaut is not None:
@@ -90,16 +125,22 @@ def resume() -> list[dict]:
     out = []
     fichier = _depuis_fichier()
     for cle, (desc, secret, _) in REGLAGES.items():
-        brut = os.environ.get(cle) or fichier.get(cle)
+        brut = os.environ.get(cle) or fichier.get(cle) or _depuis_secrets(cle)
         origine = ("environnement" if os.environ.get(cle)
                    else "fichier .env" if fichier.get(cle)
+                   else "secrets Streamlit" if _depuis_secrets(cle)
                    else "défaut")
         val = get(cle)
+        requis = secret and cle not in SECRETS_FACULTATIFS
         affiche = ("(non renseigné)" if not brut and secret
                    else _masquer(brut) if (brut and secret)
-                   else val or "(vide)")
+                   else val or "(non réglé)")
+        # Un réglage facultatif sans valeur n'est pas « manquant » : il a un
+        # comportement par défaut, décrit dans .env.example. Seul un secret
+        # requis peut manquer.
         out.append({"réglage": cle, "description": desc, "valeur": affiche,
-                    "origine": origine, "requis": secret, "ok": bool(val)})
+                    "origine": origine, "requis": requis,
+                    "ok": bool(val) or not requis})
     return out
 
 

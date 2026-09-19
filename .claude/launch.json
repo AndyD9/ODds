@@ -3,10 +3,11 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "streamlit", "run", "src/odds/app/dashboard.py",
-                      "--server.port", "8501", "--server.headless", "true"],
-      "port": 8501
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c",
+                      "uv run streamlit run src/odds/app/dashboard.py --server.port ${PORT:-8501} --server.headless true"],
+      "port": 8501,
+      "autoPort": true
     }
   ]
 }

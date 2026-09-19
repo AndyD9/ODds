@@ -15,6 +15,7 @@ Aucune logique d'analyse ici : uniquement de la présentation.
 
 from __future__ import annotations
 
+import re
 import zlib
 from html import escape
 from pathlib import Path
@@ -173,7 +174,7 @@ def _theme_altair() -> alt.theme.ThemeConfig:
 # ---------------------------------------------------------------------------
 
 def titre_section(texte: str) -> None:
-    """Intertitre .section-title : 13px, semi-gras, gris clair."""
+    """Intertitre de section : --fs-lg, semi-gras, presque blanc."""
     st.markdown(f'<div class="od-titre-section">{escape(texte)}</div>',
                 unsafe_allow_html=True)
 
@@ -182,6 +183,139 @@ def etat_vide(texte: str) -> None:
     """Encadré pointillé .empty-state."""
     st.markdown(f'<div class="od-vide">{escape(texte)}</div>',
                 unsafe_allow_html=True)
+
+
+def eyebrow(texte: str, ton: str = "", sous_titre: str = "") -> None:
+    """Surtitre de section en capitales espacées (« À prendre aujourd'hui »).
+
+    ``sous_titre`` : une ligne atténuée juste dessous, pour cadrer ce que la
+    section montre — sans passer par un widget qui ajouterait sa gouttière.
+    """
+    cls = "od-eyebrow" + (f" od-eyebrow-{ton}" if ton else "")
+    html = f'<div class="{cls}">{escape(texte)}</div>'
+    if sous_titre:
+        html += f'<div class="od-eyebrow-sous">{escape(sous_titre)}</div>'
+    st.markdown(f'<div class="od-eyebrow-bloc">{html}</div>', unsafe_allow_html=True)
+
+
+def carte_prise(ligue: str, heure: str, match: str, issue: str, cote: float,
+                book: str, ev: float, note: str, statut: str = "",
+                statut_detail: str = "", favori: bool = True,
+                nette: float | None = None) -> str:
+    """Carte « à prendre » : une cote au-dessus du consensus, son espérance.
+
+    La carte nomme une **cote**, pas un vainqueur : l'issue retenue est celle
+    dont le prix bat le consensus des autres livres, et c'est souvent un
+    outsider. ``statut`` le dit en une pastille (« Outsider », « Favori du
+    marché »), ``statut_detail`` le chiffre à côté (« 21 % pour le marché ·
+    favori : Espanyol 53 % ») ; ``favori`` choisit le ton de la pastille.
+    Le grand chiffre est une espérance par euro misé, et il est étiqueté
+    comme tel pour qu'on ne le lise pas comme une probabilité.
+
+    ``nette`` est la cote après commission, sur une bourse d'échange. On
+    affiche les deux : la brute est celle que l'utilisateur verra chez son
+    livre, la nette est celle sur laquelle l'espérance est calculée.
+
+    Renvoie du HTML ; le bouton d'action est posé dessous par l'appelant, car
+    seul un widget Streamlit peut déclencher un rerun.
+    """
+    pastille_statut = (badge(statut, "outline" if favori else "neu")
+                       if statut else "")
+    if statut_detail:
+        pastille_statut += f" <span>{escape(statut_detail)}</span>"
+    return (
+        '<div class="od-prise">'
+        f'<div class="od-prise-meta"><span>{escape(ligue)} · {escape(heure)}</span>'
+        f'<span class="od-prise-match">{escape(match)}</span></div>'
+        '<div class="od-prise-corps">'
+        '<div class="od-prise-gauche">'
+        '<div class="od-prise-surtitre">Cote au-dessus du consensus</div>'
+        f'<div class="od-prise-issue">{escape(issue)}</div>'
+        f'<div class="od-prise-prix">à <strong>{cote:.2f}</strong> chez {escape(book)}'
+        + (f' <span class="od-muted2" style="white-space:nowrap;">· {nette:.2f} net</span>'
+           if nette is not None and abs(nette - cote) > 5e-3 else '')
+        + '</div>'
+        f'<div class="od-prise-statut">{pastille_statut}</div></div>'
+        f'<div class="od-prise-ev-bloc"><div class="od-prise-ev">{ev:+.1f} %</div>'
+        '<div class="od-prise-ev-lib">d\'espérance par € misé</div></div></div>'
+        f'<div class="od-prise-note">{escape(note)}</div></div>')
+
+
+NIVEAUX_RESERVE = ("info", "attention", "grave")
+
+
+def _gras(texte: str) -> str:
+    """Échappe le texte, puis rend les seuls ``**gras**`` qu'on y écrit.
+
+    Le bloc est rendu avec ``unsafe_allow_html`` : tout passe d'abord par
+    ``escape``, et seule cette syntaxe-là est réintroduite. Un nom d'équipe
+    exotique ne peut donc pas écrire de balise.
+    """
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(texte),
+                  flags=re.S)
+
+
+def reserve(texte: str, niveau: str = "info") -> None:
+    """Encadré « ce que ce chiffre ne vaut pas ».
+
+    À employer pour une limite **mesurée et permanente** — une dérivation
+    qui surestime les buts, un écart qui change de signe selon la méthode,
+    une couverture complète qui perd par construction. Ce ne sont pas des
+    pannes : elles décrivent la situation, elles ne signalent pas un
+    incident, et les peindre en rouge vole le regard à ce qui appelle
+    vraiment un geste.
+
+    ``st.error`` et ``st.warning`` restent pour ce qui est survenu et
+    demande une action : un flux en retard, une passe de collecte échouée,
+    des crédits épuisés. Le test de fumée s'appuie sur cette frontière —
+    une page qui affiche une erreur y est tenue pour cassée.
+    """
+    if niveau not in NIVEAUX_RESERVE:
+        raise ValueError(f"niveau inconnu : {niveau!r} (attendu {NIVEAUX_RESERVE})")
+    cls = "od-reserve" + (f" od-reserve-{niveau}" if niveau != "info" else "")
+    st.markdown(f'<div class="{cls}">{_gras(texte)}</div>',
+                unsafe_allow_html=True)
+
+
+def carte_sure(ligue: str, heure: str, match: str, issue: str, cote: float,
+               book: str, p: float, note: str, mesure: str = "",
+               ev: float | None = None, nette: float | None = None) -> str:
+    """Carte « sûr et payant » : un favori net, payé au-dessus du consensus.
+
+    Elle répond à une autre question que ``carte_prise``. Là, le grand
+    chiffre est l'espérance et l'issue est souvent un outsider ; ici, le
+    grand chiffre est la **probabilité** — c'est elle qu'on est venu
+    chercher — et l'issue est par construction le favori du marché.
+    Le chiffre est bleu et non vert, précisément pour qu'on ne le lise pas
+    comme une espérance.
+
+    ``mesure`` porte la fréquence réellement observée à ce niveau dans
+    l'historique : une probabilité annoncée n'engage rien, une fréquence
+    mesurée si. ``ev`` reste affichée, en second, parce qu'une probabilité
+    élevée ne dit toujours pas si le prix vaut d'être pris.
+    """
+    prix = f'à <strong>{cote:.2f}</strong> chez {escape(book)}'
+    if nette is not None and abs(nette - cote) > 5e-3:
+        prix += f' <span class="od-muted2" style="white-space:nowrap;">· {nette:.2f} net</span>'
+    bas = [badge("Favori du marché", "outline")]
+    if ev is not None:
+        bas.append(badge(f"{ev:+.1f} % d'espérance par € misé",
+                         "pos" if ev > 0 else "neg"))
+    if mesure:
+        bas.append(f"<span>{escape(mesure)}</span>")
+    return (
+        '<div class="od-prise od-sure">'
+        f'<div class="od-prise-meta"><span>{escape(ligue)} · {escape(heure)}</span>'
+        f'<span class="od-prise-match">{escape(match)}</span></div>'
+        '<div class="od-prise-corps">'
+        '<div class="od-prise-gauche">'
+        '<div class="od-prise-surtitre">Favori payé au-dessus du consensus</div>'
+        f'<div class="od-prise-issue">{escape(issue)}</div>'
+        f'<div class="od-prise-prix">{prix}</div>'
+        f'<div class="od-prise-statut">{" ".join(bas)}</div></div>'
+        f'<div class="od-prise-ev-bloc"><div class="od-prise-ev">{100 * p:.0f} %</div>'
+        '<div class="od-prise-ev-lib">de chances selon le marché</div></div></div>'
+        f'<div class="od-prise-note">{escape(note)}</div></div>')
 
 
 def badge(texte: str, ton: str = "outline") -> str:
@@ -193,8 +327,8 @@ def barre_1n2(p1: float, pn: float, p2: float) -> str:
     """Barre empilée 1 · N · 2, en pourcentages, surmontée des valeurs."""
     a, b, c = 100 * p1, 100 * pn, 100 * p2
     return (
-        '<div class="od-mono" style="display:flex;gap:6px;margin-bottom:5px;'
-        'font-size:12.5px;">'
+        '<div class="od-mono" style="display:flex;gap:var(--sp-2);'
+        'margin-bottom:var(--sp-1);font-size:var(--fs-sm);">'
         f'<span style="color:{BLEU_CLAIR};">{a:.1f}</span>'
         '<span class="od-muted2">·</span>'
         f'<span class="od-muted">{b:.1f}</span>'

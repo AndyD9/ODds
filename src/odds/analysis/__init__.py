@@ -25,9 +25,12 @@ from odds.analysis.base import (ISSUES_1X2, analyser_livre, avec_cloture,  # noq
                                 avec_precoce, carte_information_tardive,
                                 carte_marges, charger, cible, comparer_methodes,
                                 courbe_calibration, ece, probabilites_marche)
-from odds.analysis.consensus import (N_BOOKS_MINI, SEUIL_EV_MINI,  # noqa: F401
+from odds.analysis.consensus import (N_BOOKS_MINI, SEUIL_COTE_SURE,  # noqa: F401
+                                     SEUIL_EV_MINI, SEUIL_P_SUR,
                                      SEUIL_PRIME_ISOLEE, SOUTIEN_MINI,
-                                     MatchsDuJour, _verdict, matchs_a_la_date)
+                                     VERDICT_VALEUR, MatchsDuJour, _verdict,
+                                     matchs_a_la_date, pari_a_valeur,
+                                     paris_surs)
 from odds.analysis.fiabilite import (BORNES_CONFIANCE, NIVEAUX,  # noqa: F401
                                      _niveau, annoter_confiance,
                                      fiabilite_buts, fiabilite_historique,

@@ -16,3 +16,6 @@ effacée : son statut passe à « remplacée » et pointe vers la suivante.
 | [0004](0004-etat-et-derive.md) | `data/` pour l'état irremplaçable, `research/data/` pour le dérivé | acceptée |
 | [0005](0005-tables-precalculees-datees.md) | Les tables précalculées portent le rho et le catalogue qui les ont produites | acceptée |
 | [0006](0006-jambes-groupees.md) | Les jambes d'une couverture sont des paris ordinaires reliés par un `groupe` | acceptée |
+| [0007](0007-rester-sur-streamlit.md) | Le tableau de bord reste sur Streamlit, la dette de mise en page est bornée | proposée |
+| [0008](0008-commission-des-exchanges.md) | Les cotes d'exchange sont comparées nettes de commission | acceptée |
+| [0009](0009-heberger-sur-invitation.md) | L'application est hébergée sur Community Cloud, sur invitation ; l'état est copié dans un seau Supabase, la collecte tourne sur GitHub Actions | proposée |

@@ -529,3 +529,69 @@ def test_la_migration_ne_rejoue_pas(tmp_path):
     # réinterprété : la conversion a eu lieu une fois, et une seule.
     con.execute("UPDATE pari SET resultat = 'N'"); con.commit(); con.close()
     assert paper.paris(chemin).resultat.iloc[0] == "N"
+
+
+# ---------------------------------------------------------------------------
+# Valeur — l'espérance mise en avant
+# ---------------------------------------------------------------------------
+
+def test_valeur_est_l_esperance_par_unite_misee():
+    # p × cote − 1 : le favori sûr n'a pas de valeur, l'outsider payé en a.
+    assert paper.valeur(0.80, 1.20) == pytest.approx(-0.04)
+    assert paper.valeur(0.24, 4.40) == pytest.approx(0.056)
+    assert paper.valeur(0.5, 2.0) == pytest.approx(0.0)
+
+
+def test_valeur_et_kelly_ont_le_meme_signe():
+    for p, cote in ((0.3, 3.0), (0.3, 3.5), (0.6, 1.5), (0.6, 1.8)):
+        v, k = paper.valeur(p, cote), paper.kelly(p, cote)
+        assert (v > 0) == (k > 0) and (v == 0) == (k == 0)
+        # Kelly n'est que la valeur mise à l'échelle par (cote − 1).
+        assert k == pytest.approx(v / (cote - 1))
+
+
+def test_valeur_refuse_les_memes_saisies_que_kelly():
+    with pytest.raises(ValueError):
+        paper.valeur(0.5, 1.0)
+    with pytest.raises(ValueError):
+        paper.valeur(1.2, 2.0)
+
+
+def test_le_carnet_porte_la_valeur_annoncee(carnet):
+    pid = _pari(carnet, cote=2.5, p=0.5, mise=10)   # +25 % de valeur
+    d = paper.paris(carnet).set_index("id")
+    assert d.loc[pid, "valeur"] == pytest.approx(25.0)
+    assert d.loc[pid, "esperance"] == pytest.approx(2.5)
+
+
+def test_bilan_compare_l_esperance_annoncee_au_profit(carnet):
+    # Deux paris à +25 % de valeur, 10 € chacun : 5 € attendus au total.
+    _pari(carnet, issue="1", cote=2.5, p=0.5, mise=10)
+    _pari(carnet, issue="2", cote=2.5, p=0.5, mise=10)
+    en_attente = paper.bilan(paper.paris(carnet))
+    assert en_attente["esperance"] == pytest.approx(0.0)
+    assert en_attente["esperance_en_attente"] == pytest.approx(5.0)
+
+    paper.regler_match("oa:abc", 1, 0, chemin=carnet)
+    b = paper.bilan(paper.paris(carnet))
+    assert b["esperance"] == pytest.approx(5.0)
+    assert b["valeur_moyenne"] == pytest.approx(0.25)
+    assert b["n_valeur_positive"] == 2
+    assert b["esperance_en_attente"] == pytest.approx(0.0)
+    # Le profit réalisé (+15 − 10 = +5) n'a aucune raison d'égaler l'espérance.
+    assert b["profit"] == pytest.approx(5.0)
+
+
+def test_un_pari_annule_n_entre_pas_dans_l_esperance(carnet):
+    pid = _pari(carnet, cote=2.5, p=0.5, mise=10)
+    paper.annuler(pid, chemin=carnet)
+    b = paper.bilan(paper.paris(carnet))
+    assert b["esperance"] == pytest.approx(0.0)
+    assert np.isnan(b["valeur_moyenne"])
+    assert b["n_valeur_positive"] == 0
+
+
+def test_bilan_vide_porte_les_champs_de_valeur(carnet):
+    b = paper.bilan(paper.paris(carnet))
+    assert b["esperance"] == 0.0 and b["esperance_en_attente"] == 0.0
+    assert np.isnan(b["valeur_moyenne"])

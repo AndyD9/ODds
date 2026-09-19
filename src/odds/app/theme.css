@@ -5,8 +5,32 @@
  * ne contient que ce que le thème Streamlit ne sait pas dire — la géométrie
  * des tuiles, les alertes bordées, les tableaux, les puces de filtre.
  *
- * Les valeurs (px, opacités, interlignes) sont celles du bloc <style> de la
- * maquette, pas des approximations.
+ * Deux règles d'écriture, pour éviter les décalages d'un pixel :
+ *
+ * 1. **Grille de 4 px.** Tout espacement (padding, margin, gap, rayon,
+ *    hauteur) est un multiple de 0.25rem, pris dans les jetons --sp-* ci-
+ *    dessous. Seuls les filets (border: 1px) y échappent : ce sont des
+ *    traits, pas des espaces.
+ * 2. **Tout en rem.** Aucune valeur en px hors des filets et des points de
+ *    rupture des media queries. Les tailles de texte viennent de l'échelle
+ *    --fs-* : neuf paliers, pas de 12.5 ou 13.5 qui cassent l'alignement.
+ *
+ * Et une frontière, qui décide de ce qui casse le jour d'une mise à jour :
+ *
+ *   **Sections 1 à 10 — zone fragile.** Elles habillent les widgets de
+ *   Streamlit en visant ses `data-testid`, que Streamlit ne documente pas et
+ *   renomme sans préavis. C'est pour elles que `pyproject.toml` épingle
+ *   `streamlit~=1.64.0` : une montée de mineure se relit ici, règle par règle.
+ *   Deux exceptions vivent en section 11, signalées sur place par « zone
+ *   fragile » : elles sont soudées à notre propre balisage et se liraient mal
+ *   ailleurs. `tests/test_theme_css.py` les compte toutes.
+ *
+ *   **Section 11 — notre balisage.** Les classes `.od-*` que `theme.py`
+ *   écrit lui-même : tuiles, tableau dessiné, pastilles, barre 1 · N · 2.
+ *   Elles ne dépendent d'aucun interne et survivraient telles quelles à un
+ *   changement de socle. La décision [0007](../../../decisions/0007-rester-sur-streamlit.md)
+ *   fait de la taille de la zone fragile le compteur de la dette : passé
+ *   nettement 150 lignes, le rapport coût/bénéfice d'une migration a basculé.
  */
 
 :root {
@@ -36,6 +60,33 @@
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
+  /* Grille de 4 px : --sp-N = N × 0.25rem. */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-7: 1.75rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+
+  /* Rayons, sur la même grille. */
+  --r-sm: 0.25rem;
+  --r-md: 0.5rem;
+  --r-lg: 0.75rem;
+
+  /* Échelle typographique (11 → 32 px à 16 px de base). */
+  --fs-2xs: 0.6875rem;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.125rem;
+  --fs-2xl: 1.25rem;
+  --fs-3xl: 1.5rem;
+  --fs-4xl: 2rem;
+
   /* Icônes d'alerte de la maquette, reprises trait pour trait et posées en
    * masque : la couleur vient de `background-color`, pas du SVG. */
   --icone-info: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cline x1='12' y1='11' x2='12' y2='16'/%3E%3Ccircle cx='12' cy='7.5' r='0.6' fill='black' stroke='none'/%3E%3C/svg%3E");
@@ -43,22 +94,29 @@
   --icone-alerte: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 3.9a1.6 1.6 0 0 1 2.8 0l8.2 14.6a1.6 1.6 0 0 1-1.4 2.4H3.8a1.6 1.6 0 0 1-1.4-2.4z'/%3E%3Cline x1='12' y1='9.5' x2='12' y2='13.5'/%3E%3Ccircle cx='12' cy='16.6' r='0.6' fill='black' stroke='none'/%3E%3C/svg%3E");
 }
 
+/* ╔════════════════════════════════════════════════════════════════════╗
+   ║  ZONE FRAGILE — sections 1 à 10                                    ║
+   ║  Tout ce qui suit vise des `data-testid` internes à Streamlit,     ║
+   ║  liés à la version épinglée dans pyproject.toml (~=1.64.0).        ║
+   ║  À relire intégralement avant toute montée de mineure.             ║
+   ╚════════════════════════════════════════════════════════════════════╝ */
+
 /* ======================================================================
    1. Mise en page
    ====================================================================== */
 
 /* La maquette pose 40px de gouttière et un contenu de 1180px centré. */
 [data-testid="stMainBlockContainer"] {
-  padding: 40px 40px 100px;
-  max-width: 1260px;
+  padding: var(--sp-10) var(--sp-10) 6.25rem;
+  max-width: 78.75rem;
 }
 
 /* Rythme vertical : 22px entre blocs de premier niveau. */
 [data-testid="stMain"] [data-testid="stVerticalBlock"] {
-  gap: 0.9rem;
+  gap: var(--sp-4);
 }
 [data-testid="stMain"] > div > [data-testid="stVerticalBlock"] {
-  gap: 1.375rem;
+  gap: var(--sp-6);
 }
 
 /* ======================================================================
@@ -66,28 +124,29 @@
    ====================================================================== */
 
 [data-testid="stMain"] h1 {
-  font-size: 23px;
+  font-size: var(--fs-3xl);
   font-weight: 600;
   letter-spacing: -0.012em;
   padding: 0;
   line-height: 1.25;
 }
 [data-testid="stMain"] h2 {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.008em;
-  padding: 10px 0 0;
+  padding: var(--sp-2) 0 0;
 }
 [data-testid="stMain"] h3 {
-  font-size: 15.5px;
+  font-size: var(--fs-xl);
   font-weight: 600;
-  padding: 6px 0 0;
+  letter-spacing: -0.008em;
+  padding: var(--sp-2) 0 0;
 }
 
 /* Corps de texte : .body-sm de la maquette. */
 [data-testid="stMain"] [data-testid="stMarkdownContainer"] p,
 [data-testid="stMain"] [data-testid="stMarkdownContainer"] li {
-  font-size: 13.5px;
+  font-size: var(--fs-md);
   line-height: 1.62;
   color: var(--body-fg);
 }
@@ -99,29 +158,29 @@
 /* Légendes : .small. */
 [data-testid="stCaptionContainer"],
 [data-testid="stCaptionContainer"] p {
-  font-size: 12.5px !important;
+  font-size: var(--fs-sm) !important;
   line-height: 1.55;
   color: var(--muted-fg) !important;
 }
 
 /* Étiquettes de widget : .label. */
 [data-testid="stWidgetLabel"] p {
-  font-size: 12px !important;
+  font-size: var(--fs-xs) !important;
   font-weight: 500;
   color: var(--muted-fg) !important;
 }
 
 code {
   font-family: var(--mono);
-  font-size: 12px !important;
+  font-size: var(--fs-xs) !important;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 1px 6px !important;
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-2) !important;
 }
 
 hr {
   border-color: var(--border);
-  margin: 0.5rem 0;
+  margin: var(--sp-3) 0;
 }
 
 /* ======================================================================
@@ -130,16 +189,16 @@ hr {
 
 [data-testid="stAlertContainer"] {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: flex-start;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border);
-  padding: 12px 14px;
-  font-size: 13px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
   line-height: 1.55;
 }
 [data-testid="stAlertContainer"] [data-testid="stMarkdownContainer"] p {
-  font-size: 13px !important;
+  font-size: var(--fs-sm) !important;
   line-height: 1.55;
   color: #c7cad1 !important;
 }
@@ -151,10 +210,10 @@ hr {
 /* L'icône est posée en ::before : Streamlit n'en affiche pas sans `icon=`. */
 [data-testid="stAlertContainer"]::before {
   content: "";
-  flex: 0 0 15px;
-  width: 15px;
-  height: 15px;
-  margin-top: 2px;
+  flex: 0 0 var(--sp-4);
+  width: var(--sp-4);
+  height: var(--sp-4);
+  margin-top: var(--sp-1);
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-size: contain;
@@ -212,12 +271,12 @@ hr {
 [data-testid="stMain"] [data-testid="stMetric"] {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 22px;
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-6);
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   justify-content: flex-start;
 }
 [data-testid="stMetricLabel"] {
@@ -230,8 +289,8 @@ hr {
   white-space: normal;
 }
 [data-testid="stMetricLabel"] p {
-  font-size: 12px !important;
-  font-weight: 400 !important;
+  font-size: var(--fs-sm) !important;
+  font-weight: 500 !important;
   color: var(--muted-fg) !important;
   line-height: 1.3;
   white-space: normal;
@@ -239,7 +298,7 @@ hr {
   text-overflow: clip;
 }
 [data-testid="stMetricValue"] {
-  font-size: 25px;
+  font-size: var(--fs-3xl);
   font-weight: 600;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
@@ -278,23 +337,23 @@ hr {
   min-width: 0;
 }
 [data-testid="stMetricDelta"] [data-testid="stMarkdownContainer"] p {
-  font-size: 12px !important;
+  font-size: var(--fs-xs) !important;
   line-height: 1.35;
 }
 
 /* Quatre tuiles sur une fenêtre étroite ne laissent qu'une centaine de
  * pixels chacune : on resserre la typographie plutôt que de rogner. */
 @media (max-width: 1100px) {
-  [data-testid="stMetricValue"] { font-size: 20px; }
-  [data-testid="stMain"] [data-testid="stMetric"] { padding: 14px 16px; }
+  [data-testid="stMetricValue"] { font-size: var(--fs-2xl); }
+  [data-testid="stMain"] [data-testid="stMetric"] { padding: var(--sp-3) var(--sp-4); }
 }
 @media (max-width: 800px) {
-  [data-testid="stMetricValue"] { font-size: 17px; }
-  [data-testid="stMainBlockContainer"] { padding: 24px 16px 80px; }
+  [data-testid="stMetricValue"] { font-size: var(--fs-lg); }
+  [data-testid="stMainBlockContainer"] { padding: var(--sp-6) var(--sp-4) 5rem; }
 }
 [data-testid="stMetricDelta"] {
-  font-size: 12px;
-  gap: 4px;
+  font-size: var(--fs-xs);
+  gap: var(--sp-1);
   /* Ces libellés portent des formules (« f_base 0.10 × confiance 0.16 ») :
    * tronqués, ils ne disent plus rien. */
   white-space: normal;
@@ -307,8 +366,8 @@ hr {
   text-overflow: clip;
 }
 [data-testid="stMetricDelta"] svg {
-  width: 12px;
-  height: 12px;
+  width: var(--sp-3);
+  height: var(--sp-3);
 }
 
 /* ======================================================================
@@ -318,19 +377,19 @@ hr {
 [data-testid="stExpander"] details {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 [data-testid="stExpander"] summary {
-  padding: 13px 18px;
+  padding: var(--sp-3) var(--sp-4);
 }
 [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p {
-  font-size: 13px !important;
+  font-size: var(--fs-sm) !important;
   font-weight: 600;
   color: #e4e4e7 !important;
 }
 [data-testid="stExpanderDetails"] {
-  padding: 0 18px 18px;
+  padding: 0 var(--sp-4) var(--sp-4);
 }
 
 /* ======================================================================
@@ -345,17 +404,17 @@ hr {
 [data-testid="stNumberInput"] div[data-testid="stNumberInputContainer"] {
   background: var(--field) !important;
   border: 1px solid var(--border) !important;
-  border-radius: 8px !important;
+  border-radius: var(--r-md) !important;
 }
 [data-testid="stSelectbox"] div[role="group"] {
-  min-height: 36px;
+  min-height: 2.25rem;
 }
 [data-testid="stSelectbox"] input,
 [data-testid="stMultiSelect"] input,
 [data-testid="stDateInput"] input,
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input {
-  font-size: 13.5px;
+  font-size: var(--fs-md);
 }
 
 /* Puces du multiselect — .chip / .chip-active. */
@@ -364,10 +423,10 @@ hr {
   background: var(--blue-bg) !important;
   border: 1px solid var(--blue-border) !important;
   color: var(--blue) !important;
-  border-radius: 7px !important;
-  font-size: 12.5px !important;
+  border-radius: var(--r-md) !important;
+  font-size: var(--fs-sm) !important;
   font-weight: 500 !important;
-  height: 29px;
+  height: var(--sp-7);
 }
 
 /* ======================================================================
@@ -375,7 +434,7 @@ hr {
    ====================================================================== */
 
 [data-testid="stDataFrame"] {
-  border-radius: 10px;
+  border-radius: var(--r-md);
   overflow: hidden;
 }
 
@@ -384,30 +443,33 @@ hr {
    ====================================================================== */
 
 [data-baseweb="tab-list"] {
-  gap: 4px;
+  gap: var(--sp-1);
   border-bottom: 1px solid var(--border);
 }
 [data-baseweb="tab"] {
-  font-size: 13px !important;
+  font-size: var(--fs-sm) !important;
   font-weight: 500;
   color: var(--muted-fg) !important;
-  padding: 10px 14px !important;
+  padding: var(--sp-2) var(--sp-4) !important;
 }
 [data-baseweb="tab"][aria-selected="true"] {
   color: var(--fg) !important;
 }
+[data-baseweb="tab-panel"] {
+  padding-top: var(--sp-4) !important;
+}
 
 /* ======================================================================
-   9. Barres de progression — .bar : 5px, rayon 3px
+   9. Barres de progression — .bar : 4px, rayon 4px
    ====================================================================== */
 
 [data-testid="stProgressBarTrack"] {
   background: var(--border) !important;
-  height: 5px !important;
-  border-radius: 3px;
+  height: var(--sp-1) !important;
+  border-radius: var(--r-sm);
 }
 [data-testid="stProgressBar"] > div > div > div {
-  border-radius: 3px;
+  border-radius: var(--r-sm);
 }
 
 /* ======================================================================
@@ -415,79 +477,158 @@ hr {
    ====================================================================== */
 
 [data-testid="stSidebarContent"] {
-  background: var(--card);
+  /* Un cran sous le fond de page, pas la couleur des cartes : la barre ne
+   * doit pas ressembler à une grande carte posée à côté des petites. */
+  background: var(--field);
   border-right: 1px solid var(--border);
 }
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+  padding: var(--sp-7) var(--sp-5) var(--sp-6);
+}
 [data-testid="stSidebar"] h1 {
-  font-size: 15.5px;
+  font-size: var(--fs-2xl);
   font-weight: 600;
-  letter-spacing: -0.008em;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  color: var(--fg);
+  padding: 0 var(--sp-2) var(--sp-6);
 }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
 }
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
   text-transform: uppercase;
-  letter-spacing: 0.035em;
-  font-size: 11px !important;
+  letter-spacing: 0.06em;
+  font-size: var(--fs-2xs) !important;
+  font-weight: 600;
   color: var(--muted-fg-2) !important;
+  padding: 0 var(--sp-2);
+}
+[data-testid="stSidebar"] hr {
+  margin: var(--sp-1) 0;
 }
 
-/* Le choix de page se lit comme une navigation, pas comme un formulaire. */
+/* La navigation se lit comme une liste de liens, pas comme un formulaire :
+ * pas de cercle, l'entrée active sur fond carte, les autres en gris. */
+/* Streamlit dimensionne le groupe radio à son contenu : chaque entrée
+ * n'aurait que la largeur de son libellé, et les fonds actifs seraient de
+ * longueurs différentes. On étire toute la chaîne sur la colonne. */
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has([data-testid="stRadio"]),
+[data-testid="stSidebar"] [data-testid="stRadio"],
+[data-testid="stSidebar"] [data-testid="stRadioGroup"],
+[data-testid="stSidebar"] [data-testid="stRadioOption"],
+[data-testid="stSidebar"] [data-testid="stRadioOption"] > div {
+  width: 100%;
+}
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] {
-  gap: 1px;
+  gap: var(--sp-1);
+  align-items: stretch;
 }
 [data-testid="stSidebar"] [data-testid="stRadioOption"] {
-  border-radius: 7px;
-  padding: 5px 8px;
-  transition: background 0.12s ease;
+  display: block;
+  border-radius: var(--r-md);
+  padding: var(--sp-2);   /* même retrait que les étiquettes et légendes */
+  margin: 0;
+  transition: background 0.12s ease, color 0.12s ease;
 }
-[data-testid="stSidebar"] [data-testid="stRadioOption"]:hover {
-  background: #1f1f23;
+[data-testid="stSidebar"] [data-testid="stRadioOption"] > div > div:first-child {
+  display: none;
 }
 [data-testid="stSidebar"] [data-testid="stRadioOption"] p {
-  font-size: 13px !important;
+  font-size: var(--fs-sm) !important;
+  color: var(--muted-fg) !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"]:hover {
+  background: #15151a;
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"][data-selected="true"] {
+  background: var(--card);
+}
+[data-testid="stSidebar"] [data-testid="stRadioOption"][data-selected="true"] p {
+  color: var(--fg) !important;
+  font-weight: 500;
+}
+
+/* Réglages repliés : une ligne discrète, pas une carte. */
+[data-testid="stSidebar"] [data-testid="stExpander"] details {
+  border: 0;
+  background: transparent;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+  padding: var(--sp-2) var(--sp-2);
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p {
+  font-size: var(--fs-sm) !important;
+  color: var(--muted-fg) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpanderDetails"] {
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+
+/* Pied de barre : crédits et cadrage, en retrait. */
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+  padding: 0 var(--sp-2);
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+  font-size: var(--fs-xs) !important;
+  color: var(--muted-fg-2) !important;
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] strong {
+  color: var(--muted-fg);
+}
+[data-testid="stSidebar"] [data-testid="stProgress"] {
+  padding: 0 var(--sp-2);
 }
 
 /* Les indicateurs de la barre latérale sont plus compacts. */
 [data-testid="stSidebar"] [data-testid="stMetric"] {
   background: var(--card-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
 }
 [data-testid="stSidebar"] [data-testid="stMetricValue"] {
-  font-size: 19px;
+  font-size: var(--fs-2xl);
 }
+
+/* ╔════════════════════════════════════════════════════════════════════╗
+   ║  FIN DE LA ZONE FRAGILE                                            ║
+   ║  Ce qui suit ne dépend que du balisage écrit par app/theme.py.     ║
+   ╚════════════════════════════════════════════════════════════════════╝ */
 
 /* ======================================================================
    11. Composants dessinés par app/theme.py
    ====================================================================== */
 
+/* Zone fragile (1/2) : `st.container(border=True)` porte la même carte que
+ * `.od-carte`, et les deux partagent le filet et le rayon. Séparer les deux
+ * sélecteurs ferait diverger la carte native de la carte dessinée au premier
+ * changement de jeton — ils restent donc ensemble, ici. */
 .od-carte,
 [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
 }
 .od-carte {
-  padding: 20px;
+  padding: var(--sp-5);
 }
 /* st.container(border=True) : la carte de la maquette, gouttière 20px. */
 [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] > div > [data-testid="stVerticalBlock"] {
-  padding: 20px;
-  gap: 0.85rem;
+  padding: var(--sp-5);
+  gap: var(--sp-4);
 }
 
 .od-titre-section {
-  font-size: 13px;
+  font-size: var(--fs-lg);
   font-weight: 600;
-  color: #e4e4e7;
+  letter-spacing: -0.006em;
+  color: #f4f4f5;
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 2px;
+  gap: var(--sp-2);
+  margin: var(--sp-1) 0 var(--sp-2);
 }
 
 /* --- tableau dessiné : .table de la maquette --------------------------- */
@@ -497,11 +638,11 @@ hr {
   scrollbar-color: #3f3f46 transparent;
 }
 .od-table-wrap::-webkit-scrollbar {
-  height: 8px;
+  height: var(--sp-2);
 }
 .od-table-wrap::-webkit-scrollbar-thumb {
   background: #3f3f46;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 .od-table-wrap::-webkit-scrollbar-track {
   background: transparent;
@@ -509,7 +650,7 @@ hr {
 .od-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 /* `border: none` d'abord : Streamlit borde les cellules de tout <table>
  * rendu en markdown, la maquette ne trace que des filets horizontaux. */
@@ -522,15 +663,15 @@ hr {
   text-align: left;
   font-weight: 500;
   color: var(--muted-fg);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.035em;
-  padding: 9px 10px;
+  padding: var(--sp-2) var(--sp-2);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .od-table tbody td {
-  padding: 11px 10px;
+  padding: var(--sp-3) var(--sp-2);
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
   white-space: nowrap;
@@ -565,9 +706,9 @@ hr {
 .od-badge {
   display: inline-flex;
   align-items: center;
-  padding: 2.5px 8px;
-  border-radius: 6px;
-  font-size: 12px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
   font-weight: 600;
   border: 1px solid;
   white-space: nowrap;
@@ -597,16 +738,16 @@ hr {
   border-color: var(--border);
   color: var(--muted-fg);
   font-weight: 500;
-  padding: 2px 7px;
+  padding: var(--sp-1) var(--sp-2);
 }
 
 /* --- barre 1 · N · 2 -------------------------------------------------- */
 .od-bar {
   display: flex;
-  height: 5px;
+  height: var(--sp-1);
   width: 100%;
-  max-width: 120px;
-  border-radius: 3px;
+  max-width: 7.5rem;
+  border-radius: var(--r-sm);
   overflow: hidden;
   background: var(--border);
 }
@@ -615,8 +756,8 @@ hr {
 .od-bar-2 { background: #3f3f46; height: 100%; }
 
 .od-dot {
-  width: 9px;
-  height: 9px;
+  width: var(--sp-2);
+  height: var(--sp-2);
   border-radius: 50%;
   display: inline-block;
   flex-shrink: 0;
@@ -625,23 +766,228 @@ hr {
 /* --- état vide -------------------------------------------------------- */
 .od-vide {
   border: 1px dashed var(--border);
-  border-radius: 10px;
-  padding: 30px;
+  border-radius: var(--r-md);
+  padding: var(--sp-8);
   text-align: center;
   color: var(--muted-fg);
-  font-size: 13.5px;
+  font-size: var(--fs-md);
+}
+
+/* --- réserve : ce que le chiffre ne vaut pas --------------------------- */
+/* Une réserve n'est pas une panne. Elle énonce une limite mesurée — une
+   dérivation qui surestime, un écart qui dépend de la méthode, une
+   couverture qui perd par construction — et elle est vraie en permanence,
+   pas survenue. Elle porte donc un filet de couleur à gauche, jamais un
+   fond alarmé : la couleur pleine reste à ce qui appelle un geste.
+   Notre propre balisage, indépendant de la version de Streamlit. */
+.od-reserve {
+  border: 1px solid var(--border);
+  border-left: var(--sp-1) solid var(--muted-fg-2);
+  border-radius: var(--r-md);
+  background: var(--card-2);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--body-fg);
+}
+.od-reserve strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+.od-reserve-attention {
+  border-left-color: var(--amber);
+}
+.od-reserve-grave {
+  border-left-color: var(--red);
 }
 
 /* --- légende du nuage de points --------------------------------------- */
 .od-legende {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px 15px;
-  font-size: 12px;
+  gap: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
   color: var(--body-fg);
 }
 .od-legende > span {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
+}
+
+/* --- « à prendre aujourd'hui » : la décision, en tête de page ---------- */
+
+/* Zone fragile (2/2) : la chaîne colonne → bloc → conteneur d'élément est
+ * interne à Streamlit, mais chaque maillon est sélectionné par `:has(.od-prise)`
+ * — elle n'existe que pour cette carte-là et se lit avec elle.
+ *
+ * Bento : trois cartes côte à côte doivent avoir la même hauteur, quel
+ * que soit leur contenu, et leurs boutons alignés sur une même ligne. La
+ * carte est un bloc markdown, le bouton un widget : on fait donc traverser
+ * le flex de la colonne jusqu'à la carte, qui absorbe l'espace restant. */
+[data-testid="stColumn"]:has(.od-prise) {
+  display: flex;
+  flex-direction: column;
+}
+[data-testid="stColumn"]:has(.od-prise) > [data-testid="stVerticalBlock"] {
+  flex: 1 1 auto;
+}
+[data-testid="stElementContainer"]:has(.od-prise),
+[data-testid="stElementContainer"]:has(.od-prise) > [data-testid="stMarkdown"],
+[data-testid="stElementContainer"]:has(.od-prise) > [data-testid="stMarkdown"] > div,
+[data-testid="stElementContainer"]:has(.od-prise) [data-testid="stMarkdownContainer"] {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-height: 0;
+}
+.od-eyebrow-bloc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-1);
+}
+.od-eyebrow {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+}
+.od-eyebrow-pos {
+  color: var(--emerald);
+}
+.od-eyebrow-sous {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--muted-fg);
+}
+.od-prise {
+  background: var(--card);
+  border: 1px solid var(--emerald-border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-5) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  /* Le bouton « Préparer le pari » est un widget séparé posé juste
+   * dessous : sans cette marge, il colle au bord de la carte. */
+  margin-bottom: var(--sp-2);
+  flex: 1 1 auto;
+}
+.od-prise-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted-fg);
+}
+.od-prise-match {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--body-fg);
+}
+/* Deux colonnes tant qu'il y a de la place ; sur une carte étroite,
+ * l'espérance passe sous l'issue, alignée à droite, au lieu d'écraser le
+ * texte lettre par lettre. */
+.od-prise-corps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-2) var(--sp-4);
+}
+.od-prise-gauche {
+  flex: 1 1 10.5rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.od-prise-surtitre {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-fg-2);
+}
+.od-prise-issue {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.2;
+  color: var(--fg);
+}
+.od-prise-prix {
+  font-size: var(--fs-sm);
+  color: var(--body-fg);
+}
+.od-prise-prix strong {
+  color: var(--fg);
+}
+.od-prise-statut {
+  margin-top: var(--sp-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--muted-fg);
+}
+.od-prise-statut:empty {
+  display: none;
+}
+.od-prise-ev-bloc {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+.od-prise-ev {
+  font-size: var(--fs-4xl);
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--emerald);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.od-prise-ev-lib {
+  font-size: var(--fs-2xs);
+  color: var(--muted-fg-2);
+  white-space: nowrap;
+}
+/* Variante « sûr et payant » (prereg 0006) : le grand chiffre n'est plus
+   une espérance mais une PROBABILITÉ, et il ne doit donc pas porter le vert
+   qui, partout ailleurs sur cette page, veut dire « espérance positive ».
+   Bleu, comme les probabilités du tableau et de la barre 1 · N · 2. */
+.od-prise.od-sure {
+  border-color: var(--blue-border);
+}
+.od-sure .od-prise-ev {
+  color: var(--blue);
+}
+
+.od-prise-note {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--muted-fg);
+  margin-top: auto;
+}
+.od-ecarte {
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--muted-fg-2);
+  margin-top: var(--sp-2);
+}
+.od-ecarte b {
+  color: var(--muted-fg);
+  font-weight: 500;
+}
+.od-ecarte s {
+  color: var(--muted-fg-2);
 }

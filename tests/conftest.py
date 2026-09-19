@@ -26,6 +26,11 @@ def aucun_appel_api_payant(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(config, "FICHIER_ENV",
                         tmp_path_factory.mktemp("env") / ".env")
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    # Hébergement (decisions/0009) : ni copie distante ni comptes pendant
+    # les tests — le carnet reste local, l'utilisateur reste « local ».
+    for cle in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "SUPABASE_BUCKET",
+                "ODDS_INVITES", "ODDS_PROPRIETAIRE"):
+        monkeypatch.delenv(cle, raising=False)
     config.recharger()
 
     # 2) ceinture et bretelles : la couche réseau elle-même est bloquée.
@@ -35,6 +40,15 @@ def aucun_appel_api_payant(tmp_path_factory, monkeypatch):
             "Les tests ne doivent jamais consommer de crédits payants.")
 
     monkeypatch.setattr(oddsapi, "_get", interdit)
+
+    # 3) même verrou sur la copie distante de l'état : un test qui la
+    #    configure par mégarde ne doit pas écrire dans un vrai seau.
+    from odds import stockage
+
+    def interdit_stockage(*a, **k):
+        raise AssertionError("Un test a tenté un appel réseau vers Supabase Storage.")
+
+    monkeypatch.setattr(stockage, "_requete", interdit_stockage)
 
     yield
     config.recharger()

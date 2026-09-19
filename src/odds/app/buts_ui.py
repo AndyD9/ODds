@@ -82,19 +82,19 @@ def bandeau_source(imp: buts.Implicite, contraint: bool, n_books_ou: int = 0,
         quoi = ("les probabilités 1X2 et la cote over/under de ce match "
                 "simultanément" if "over/under" in imp.contraintes
                 else "les probabilités 1X2 de ce match")
-        st.error(
+        theme.reserve(
             f"La matrice de score ne reproduit pas {quoi} (écart "
             f"{100 * imp.ecart_max:.2f} pts). La famille de Poisson ne sait "
             "pas représenter cette configuration : **rien de ce qui suit "
-            "n'est exploitable.**")
+            "n'est exploitable.**", "grave")
         return
     if prix_ecarte is not None:
-        st.warning(
+        theme.reserve(
             f"Une cote over/under 2,5 a été relevée ({100 * prix_ecarte:.1f} % "
             f"pour « 3 buts ou plus », {n_books_ou} bookmaker(s)), mais aucune "
             "matrice de Poisson ne la reproduit en même temps que le 1X2 : prix "
             "aberrant, périmé ou isolé. **Elle a été écartée** et les "
-            "probabilités ci-dessous sont dérivées du 1X2 seul.")
+            "probabilités ci-dessous sont dérivées du 1X2 seul.", "attention")
     if contraint:
         st.success(
             f"**Calé sur le marché.** La cote over/under 2,5 de {n_books_ou} "
@@ -113,15 +113,15 @@ def bandeau_source(imp: buts.Implicite, contraint: bool, n_books_ou: int = 0,
                    f"entre probabilité annoncée et fréquence observée est de "
                    f"**{biais:.1f} points** (research/RESULTS.md R9).")
         if niveau == "inexploitable":
-            st.error(commun + chiffre + " **À ce niveau, ces chiffres ne sont "
-                     "pas exploitables** : la dérivation surestime lourdement "
-                     "les buts.")
+            theme.reserve(commun + chiffre + " **À ce niveau, ces chiffres ne "
+                          "sont pas exploitables** : la dérivation surestime "
+                          "lourdement les buts.", "grave")
         elif niveau == "dégradé":
-            st.error(commun + chiffre + " Le biais va toujours dans le même "
-                     "sens : **les buts sont surestimés**.")
+            theme.reserve(commun + chiffre + " Le biais va toujours dans le "
+                          "même sens : **les buts sont surestimés**.", "attention")
         else:
-            st.warning(commun + chiffre + " À lire comme un ordre de grandeur, "
-                       "pas comme un prix.")
+            theme.reserve(commun + chiffre + " À lire comme un ordre de "
+                          "grandeur, pas comme un prix.")
 
 
 def bloc_buts(ligne, totaux: pd.DataFrame | None = None) -> None:

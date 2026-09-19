@@ -243,7 +243,18 @@ def cmd_collect(args) -> int:
         return 0
 
     print(f"Collecte — {pd.Timestamp.now("UTC"):%Y-%m-%d %H:%M:%S} UTC")
-    r = collecter()
+    # Hébergé (decisions/0009) : la base de collecte vit dans le seau. On la
+    # tire avant la passe — l'ordonnanceur a besoin des dernières passes — et
+    # on la repousse après, même si la passe a eu des erreurs : ce qui a été
+    # écrit l'a été. Sans configuration, les deux appels sont inertes.
+    from odds import chemins, stockage
+    if stockage.actif() and stockage.rafraichir(chemins.BDD_COLLECTE):
+        print("  base de collecte ramenée du seau")
+    try:
+        r = collecter()
+    finally:
+        if stockage.publier(chemins.BDD_COLLECTE):
+            print("  base de collecte poussée dans le seau")
     print(f"\n  run {r['run_id']} · {r['matchs']} matchs · "
           f"{r['vues']} cotes vues · {r['ecrites']} écrites")
     if r.get("credits"):
@@ -252,6 +263,22 @@ def cmd_collect(args) -> int:
     if r["erreurs"]:
         print("  erreurs :", "; ".join(r["erreurs"]))
         return 1
+    return 0
+
+
+def cmd_etat(args) -> int:
+    """Copie distante de l'état — mise en service et dépannage (decisions/0009)."""
+    from odds import stockage
+    if not stockage.actif():
+        print("Copie distante non configurée : SUPABASE_URL et SUPABASE_SERVICE_KEY "
+              "manquent (voir .streamlit/secrets.toml.example).")
+        return 1
+    if args.sens == "pousser":
+        noms = stockage.pousser_tout()
+        print("Poussé :", ", ".join(noms) if noms else "rien (aucun fichier local)")
+    else:
+        noms = stockage.demarrer()
+        print("Ramené :", ", ".join(noms) if noms else "rien (tout est à jour)")
     return 0
 
 
@@ -281,6 +308,17 @@ def cmd_config(args) -> int:
         {"Réglage": e["réglage"], "Valeur": e["valeur"],
          "Origine": e["origine"], "Statut": "✅" if e["ok"] else "❌ manquant"}
         for e in etat])))
+
+    from odds.market import commission
+    impose = commission._surcharge()
+    if impose is None:
+        taux = ", ".join(f"{b} {100 * t:g} %" for b, t in
+                         sorted(set((b.split("_ex")[0], t)
+                                    for b, t in commission.TAUX_DEFAUT.items())))
+        print(f"\nCommission des bourses d'échange : taux par défaut ({taux}).")
+    else:
+        print(f"\nCommission des bourses d'échange : {100 * impose:g} % sur toutes.")
+    print("Les cotes d'exchange sont comparées NETTES de cette commission.")
 
     if config.est_configure("ODDS_API_KEY"):
         cout = config.cout_par_passe()
@@ -399,6 +437,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cr = sub.add_parser("credits", help="crédits The Odds API restants et projection")
     cr.set_defaults(func=cmd_credits)
+
+    et = sub.add_parser("etat", help="copie distante de l'état (carnet, collecte, parquets)")
+    et.add_argument("sens", choices=["pousser", "tirer"],
+                    help="pousser le local vers le seau, ou ramener le seau en local")
+    et.set_defaults(func=cmd_etat)
 
     a = sub.add_parser("app", help="lancer le tableau de bord")
     a.add_argument("--port", type=int, default=8501)
