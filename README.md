@@ -379,9 +379,10 @@ Sans rien configurer, rien ne change : `uv run odds app` reste local, sans porte
 Mise en service, une fois :
 
 1. **Un dépôt GitHub** (privé suffit) qui contient ce projet.
-2. **Un projet Supabase**, avec un seau Storage **privé** nommé `etat`. Noter l'URL du projet et
-   la clé de service (*service role*) — elle ne doit jamais apparaître côté client ni dans le
-   dépôt.
+2. **Un projet Supabase**. Noter l'URL du projet et la clé **secrète** (`sb_secret_…`, dans
+   *Project Settings → API Keys → Secret keys*) — pas la clé publiable, qui ne voit pas un seau
+   privé. Elle ne doit jamais apparaître côté client ni dans le dépôt. Le seau privé `etat` est
+   créé par l'étape 4 s'il n'existe pas.
 3. **Une clé par invité**, vous compris :
 
    ```bash

@@ -69,11 +69,37 @@ def _entetes() -> dict[str, str]:
     return {"Authorization": f"Bearer {cle}", "apikey": cle}
 
 
+class ErreurStockage(RuntimeError):
+    """Refus du seau, avec le motif que Supabase renvoie dans le corps."""
+
+
+def cle_publiable() -> bool:
+    """La clé configurée est-elle la clé *publiable* (anon) et non la clé secrète ?
+
+    Avec elle, le seau privé est invisible : la liste des seaux revient vide
+    et chaque écriture répond « Bucket not found ». C'est l'erreur la plus
+    probable à la mise en service, autant la nommer.
+    """
+    return (config.get("SUPABASE_SERVICE_KEY") or "").startswith("sb_publishable")
+
+
+def _lever_si_refus(r, methode: str, url: str) -> None:
+    """Un « 400 » ne dit rien ; le corps de la réponse dit « Bucket not found »."""
+    if r.ok:
+        return
+    try:
+        motif = r.json().get("message") or r.text
+    except ValueError:
+        motif = r.text
+    raise ErreurStockage(f"{r.status_code} {methode} {url.split('/storage/v1/', 1)[-1]}"
+                         f" : {str(motif)[:200]}")
+
+
 def _requete(methode: str, url: str, **kw) -> requests.Response:
     """Seul point de sortie réseau du module — les tests le bloquent ici."""
     r = requests.request(methode, url, headers={**_entetes(), **kw.pop("headers", {})},
                          timeout=DELAI, **kw)
-    r.raise_for_status()
+    _lever_si_refus(r, methode, url)
     return r
 
 
@@ -92,6 +118,19 @@ def _ecrire_empreinte(nom: str, empreinte: str | None) -> None:
         e[nom] = empreinte
     EMPREINTES.parent.mkdir(parents=True, exist_ok=True)
     EMPREINTES.write_text(json.dumps(e, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def seaux() -> list[str]:
+    """Noms des seaux visibles avec la clé configurée."""
+    return [b["name"] for b in _requete("GET", _url("bucket")).json()]
+
+
+def assurer_seau() -> bool:
+    """Crée le seau, privé, s'il manque. Renvoie vrai s'il a été créé."""
+    if _seau() in seaux():
+        return False
+    _requete("POST", _url("bucket"), json={"id": _seau(), "name": _seau(), "public": False})
+    return True
 
 
 def distants() -> dict[str, str]:
@@ -123,7 +162,7 @@ def publier(chemin: Path, nom: str | None = None) -> bool:
              headers={"Content-Type": "application/octet-stream", "x-upsert": "true"})
     try:
         _ecrire_empreinte(nom, distants().get(nom))
-    except requests.RequestException as e:      # la copie est faite ; l'empreinte attendra
+    except (requests.RequestException, ErreurStockage) as e:   # la copie est faite ; l'empreinte attendra
         log.warning("empreinte distante non relue après publication de %s : %s", nom, e)
     return True
 
@@ -168,5 +207,8 @@ def demarrer() -> list[str]:
 
 
 def pousser_tout() -> list[str]:
-    """Première mise en service : pousse tout ce qui existe en local."""
+    """Première mise en service : crée le seau s'il manque, pousse tout le local."""
+    if not actif():
+        return []
+    assurer_seau()
     return [nom for nom, chemin in FICHIERS.items() if publier(chemin, nom)]

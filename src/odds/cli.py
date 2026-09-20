@@ -273,12 +273,23 @@ def cmd_etat(args) -> int:
         print("Copie distante non configurée : SUPABASE_URL et SUPABASE_SERVICE_KEY "
               "manquent (voir .streamlit/secrets.toml.example).")
         return 1
-    if args.sens == "pousser":
-        noms = stockage.pousser_tout()
-        print("Poussé :", ", ".join(noms) if noms else "rien (aucun fichier local)")
-    else:
-        noms = stockage.demarrer()
-        print("Ramené :", ", ".join(noms) if noms else "rien (tout est à jour)")
+    if stockage.cle_publiable():
+        print("SUPABASE_SERVICE_KEY est la clé PUBLIABLE (sb_publishable_…). Il faut la clé "
+              "SECRÈTE (sb_secret_…) : Supabase → Project Settings → API Keys → Secret keys. "
+              "Avec la clé publiable, le seau privé est invisible et chaque écriture est refusée.")
+        return 1
+    try:
+        if args.sens == "pousser":
+            if stockage.assurer_seau():
+                print(f"Seau privé « {stockage._seau()} » créé.")
+            noms = stockage.pousser_tout()
+            print("Poussé :", ", ".join(noms) if noms else "rien (aucun fichier local)")
+        else:
+            noms = stockage.demarrer()
+            print("Ramené :", ", ".join(noms) if noms else "rien (tout est à jour)")
+    except stockage.ErreurStockage as e:
+        print(f"Refusé par Supabase — {e}")
+        return 1
     return 0
 
 

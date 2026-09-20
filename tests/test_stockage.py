@@ -19,10 +19,17 @@ class Seau:
     def __init__(self):
         self.objets: dict[str, bytes] = {}
         self.appels: list[tuple[str, str]] = []
+        self.seaux: list[str] = ["etat"]
 
     def requete(self, methode, url, **kw):
         self.appels.append((methode, url))
         chemin = url.split("/storage/v1/", 1)[1]
+        if chemin == "bucket" and methode == "GET":
+            return _Rep(json=[{"name": n} for n in self.seaux])
+        if chemin == "bucket" and methode == "POST":
+            assert kw["json"]["public"] is False, "le seau doit être privé"
+            self.seaux.append(kw["json"]["name"])
+            return _Rep(json={"name": kw["json"]["name"]})
         if chemin.startswith("object/list/"):
             return _Rep(json=[{"name": n, "metadata": {"eTag": f'"{hash(b)}"'}}
                               for n, b in self.objets.items()])
@@ -110,3 +117,33 @@ def test_demarrer_ramene_les_fichiers_connus(tmp_path, seau, monkeypatch):
     assert not fichiers["odds_history.db"].exists()
     empreintes = json.loads(stockage.EMPREINTES.read_text())
     assert set(empreintes) == {"paper.db"}
+
+
+def test_pousser_tout_cree_le_seau_prive_s_il_manque(tmp_path, seau, monkeypatch):
+    seau.seaux = []
+    monkeypatch.setattr(stockage, "FICHIERS", {"paper.db": tmp_path / "paper.db"})
+    (tmp_path / "paper.db").write_bytes(b"carnet")
+    assert stockage.pousser_tout() == ["paper.db"]
+    assert seau.seaux == ["etat"]
+    assert stockage.assurer_seau() is False, "déjà là : rien à créer"
+
+
+def test_un_refus_du_seau_porte_le_motif():
+    """« 400 » ne dit rien ; « Bucket not found » dit tout."""
+    class Refus:
+        ok, status_code, text = False, 400, '{"message": "Bucket not found"}'
+
+        def json(self):
+            return {"message": "Bucket not found"}
+
+    with pytest.raises(stockage.ErreurStockage, match="400 POST object/etat/paper.db : Bucket not found"):
+        stockage._lever_si_refus(Refus(), "POST", "https://x.supabase.co/storage/v1/object/etat/paper.db")
+
+
+def test_la_cle_publiable_est_reconnue(monkeypatch):
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "sb_publishable_abc")
+    config.recharger()
+    assert stockage.cle_publiable()
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "sb_secret_abc")
+    config.recharger()
+    assert not stockage.cle_publiable()
