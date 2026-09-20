@@ -49,9 +49,14 @@ utilisateur = acces.ouvrir()
 
 
 @st.cache_resource(show_spinner="Récupération de l'état…")
-def _etat_au_demarrage() -> list[str]:
-    """Une fois par processus : ramène l'état depuis le seau, s'il y en a un."""
-    return stockage.demarrer()
+def _etat_au_demarrage(actif: bool) -> list[str]:
+    """Une fois par processus : ramène l'état depuis le seau, s'il y en a un.
+
+    ``actif`` fait partie de la clé de cache : si les secrets arrivent après
+    le premier rendu, le rapatriement se fait au rendu suivant au lieu de
+    rester mémorisé comme « rien à faire ».
+    """
+    return stockage.demarrer() if actif else []
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -65,7 +70,7 @@ def _collecte_a_jour() -> bool:
     return stockage.rafraichir(chemins.BDD_COLLECTE)
 
 
-_etat_au_demarrage()
+_etat_au_demarrage(stockage.actif())
 _collecte_a_jour()
 
 COULEURS = theme.COULEURS_METHODE
@@ -85,7 +90,17 @@ def _probas(cles: tuple, prefixe: str, methode: str) -> np.ndarray:
 try:
     df = _donnees()
 except FileNotFoundError as e:
-    st.error(str(e))
+    # Hébergée, l'application n'a pas de disque durable : ses données viennent
+    # du seau. Si ce fichier manque, c'est presque toujours que les secrets
+    # Supabase ne sont pas lus — le dire vaut mieux qu'un chemin introuvable.
+    if stockage.actif():
+        st.error(f"{e}\n\nLa copie distante est configurée mais ne contient pas ce fichier. "
+                 "Depuis le poste : `uv run odds etat pousser`.")
+    else:
+        st.error("Aucune configuration Supabase n'est lue : `SUPABASE_URL` et "
+                 "`SUPABASE_SERVICE_KEY` manquent dans les secrets de l'application "
+                 "(Community Cloud → Manage app → Settings → Secrets). Sans eux, l'application "
+                 f"hébergée n'a pas de données.\n\nDétail : {e}")
     st.stop()
 
 clo = avec_cloture(df)
