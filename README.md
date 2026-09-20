@@ -367,14 +367,14 @@ rm ~/Library/LaunchAgents/com.odds.collect.plist
 
 ### Héberger l'application, sur invitation
 
-Hors du poste, l'application tourne sur **Streamlit Community Cloud** (gratuit), n'ouvre qu'aux
-adresses d'une liste d'invités, et chaque personne tient **son** carnet — le règlement d'un
+Hors du poste, l'application tourne sur **Streamlit Community Cloud** (gratuit), ne s'ouvre
+qu'avec un **lien personnel** envoyé à chaque invité, et chaque personne tient **son** carnet — le règlement d'un
 match, lui, vaut pour tout le monde : un score est un fait. L'état (carnet, base de collecte,
 parquets) vit dans un seau privé **Supabase Storage**, copié fichier entier à chaque écriture ;
 la collecte horaire passe sur **GitHub Actions**. Le raisonnement, ce qu'on y perd et ce qui
 ferait changer d'approche : [`decisions/0009`](decisions/0009-heberger-sur-invitation.md).
 
-Sans rien configurer, rien ne change : `uv run odds app` reste local, sans connexion.
+Sans rien configurer, rien ne change : `uv run odds app` reste local, sans porte d'entrée.
 
 Mise en service, une fois :
 
@@ -382,8 +382,14 @@ Mise en service, une fois :
 2. **Un projet Supabase**, avec un seau Storage **privé** nommé `etat`. Noter l'URL du projet et
    la clé de service (*service role*) — elle ne doit jamais apparaître côté client ni dans le
    dépôt.
-3. **Un client OAuth Google** (Google Cloud Console → identifiants → application web), avec pour
-   URI de redirection autorisée `https://<votre-app>.streamlit.app/oauth2callback`.
+3. **Une clé par invité**, vous compris :
+
+   ```bash
+   uv run odds inviter paul
+   ```
+
+   La commande imprime le lien à envoyer à Paul, et la ligne `paul = "…"` à coller dans la
+   section `[invites]` des secrets. Un lien est une clé de maison : qui l'a entre au nom de Paul.
 4. **Amorcer le seau** depuis le disque local, avec les deux variables Supabase dans `.env` :
 
    ```bash
@@ -392,15 +398,15 @@ Mise en service, une fois :
 
 5. **Déployer sur Community Cloud** : nouvelle application, dépôt ci-dessus, fichier principal
    `src/odds/app/dashboard.py`, Python 3.12. Dans *Settings → Secrets*, coller
-   [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) rempli : la liste
-   `ODDS_INVITES`, `ODDS_PROPRIETAIRE`, les valeurs Supabase et la section `[auth]`.
+   [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) rempli :
+   `ODDS_PROPRIETAIRE`, `ODDS_URL`, les valeurs Supabase et la section `[invites]`.
 6. **Brancher la collecte** : dans le dépôt GitHub, *Settings → Secrets and variables → Actions*,
    définir `ODDS_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`. Le workflow
    [`collecte.yml`](.github/workflows/collecte.yml) tourne chaque heure à h+7 ; désinstaller
    l'agent `launchd` local, sinon deux collecteurs écriraient le même fichier.
 
-Ajouter un invité : ajouter son adresse à `ODDS_INVITES` dans les secrets Community Cloud,
-l'application redémarre seule. Dépannage : `uv run odds etat tirer` ramène l'état du seau sur le
+Ajouter un invité : `odds inviter <nom>`, coller la ligne dans les secrets, envoyer le lien.
+Révoquer : retirer la ligne. Dans les deux cas l'application redémarre seule. Dépannage : `uv run odds etat tirer` ramène l'état du seau sur le
 poste ; l'application locale et la version hébergée lisent alors le même carnet.
 
 ### Autres commandes

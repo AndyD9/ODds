@@ -1,7 +1,8 @@
 # 0009 — Héberger l'application, sur invitation, sans quitter Streamlit
 
-**Statut :** proposée · **Date :** 2026-09-19 · **Code :** `src/odds/stockage.py`,
-`src/odds/app/acces.py`, `src/odds/paper.py` (schéma v5), `.github/workflows/collecte.yml`
+**Statut :** proposée · **Date :** 2026-09-19, accès révisé le 2026-09-20 · **Code :**
+`src/odds/stockage.py`, `src/odds/app/acces.py`, `src/odds/paper.py` (schéma v5),
+`.github/workflows/collecte.yml`
 
 ## Contexte
 
@@ -26,8 +27,9 @@ Trois contraintes cadrent le choix :
 
 On reste sur Streamlit, hébergé sur **Streamlit Community Cloud** (gratuit, une application
 privée, s'endort après douze heures sans visite). L'état vit dans un **seau Supabase Storage**
-privé, copié fichier entier. L'accès passe par **`st.login`** (OpenID Connect, Google) et une
-**liste d'invités** dans les secrets. La collecte passe sur un **cron GitHub Actions**.
+privé, copié fichier entier. L'accès passe par des **liens personnels** : une clé aléatoire par
+invité dans les secrets, envoyée sous forme d'adresse. La collecte passe sur un **cron GitHub
+Actions**.
 
 ### L'état : SQLite reste le format, le seau est la copie de référence
 
@@ -50,18 +52,26 @@ Ce qu'on perd, en le sachant : une écriture faite dans la fraction de seconde q
 arrêt brutal de l'instance n'est pas copiée. Pour un carnet **papier**, c'est un pari à
 réinscrire, pas une perte d'argent.
 
-### L'accès : la connexion est celle de Streamlit, la règle est la nôtre
+### L'accès : un lien personnel par invité
 
-Community Cloud sait rendre une application privée et inviter des adresses, mais depuis
-Streamlit 1.42 **il ne transmet plus l'adresse connectée à l'application** — on ne saurait pas
-qui inscrit un pari. On utilise donc `st.login` avec un client OAuth Google, et l'application
-elle-même tient la liste : `ODDS_INVITES` dans les secrets. L'application Community Cloud reste
-publique au sens de l'hébergeur ; sa première page est une porte fermée. Y ajouter quelqu'un est
-un réglage, pas un déploiement.
+Chaque invité reçoit une adresse `https://…/?cle=<clé>`. La clé — 32 caractères aléatoires,
+`odds inviter <nom>` — n'existe que dans la section `[invites]` des secrets, en face du nom qui
+deviendra l'utilisateur du carnet. L'application lit la clé dans l'adresse, la retient dans un
+cookie pour que l'invité revienne sans le lien, et compare en temps constant. Sans clé valide, la
+page est une porte fermée. Révoquer quelqu'un, c'est retirer sa ligne ; l'application redémarre
+seule. L'application Community Cloud reste publique au sens de l'hébergeur : la porte est la
+nôtre.
+
+Ce que cela vaut, écrit ici pour ne pas le découvrir plus tard : **un lien est un jeton au
+porteur**. Qui l'a entre au nom de l'invité, comme avec une clé de maison prêtée. On l'accepte
+parce que le carnet est papier, que les invités sont des gens connus, et que le pire cas est un
+pari papier inscrit sous le mauvais nom. Si l'un de ces trois points cesse d'être vrai, la
+réponse est la connexion par fournisseur d'identité (`st.login`, ci-dessous), pas un
+raffinement des liens.
 
 ### Le carnet : une colonne, pas une base par personne
 
-Schéma v5 : chaque pari porte `utilisateur` (l'adresse). `paris()`, `annuler`, `derregler`,
+Schéma v5 : chaque pari porte `utilisateur` (le nom de l'invité). `paris()`, `annuler`, `derregler`,
 `supprimer` et la bankroll ne voient que l'utilisateur courant, posé par `acces.ouvrir()` à
 chaque exécution de page via une variable de contexte. **Le règlement d'un match et la capture
 des clôtures portent sur tous les paris du match** : un score est un fait, qui le saisit le
@@ -91,19 +101,26 @@ déclenchement à vide ne coûte rien. Coût GitHub : un peu plus d'une minute p
   fournisseur de plus, pour un problème que le seau règle déjà.
 - **L'hébergement mutualisé OVH.** Ne peut pas exécuter l'application. Il pourrait servir une
   page de redirection vers l'URL Community Cloud, rien de plus.
-- **L'allowlist de Community Cloud seule, sans `st.login`.** Elle ferme la porte mais ne dit pas
-  qui est entré : impossible d'attribuer un pari.
+- **La connexion OpenID Connect (`st.login`, client OAuth Google).** C'était le premier choix
+  (2026-09-19) : une identité vérifiée par un tiers, un invité ne peut pas prêter son accès.
+  Remplacée le 2026-09-20 à la demande de l'utilisateur : la mise en place — projet Google Cloud,
+  écran de consentement, client OAuth, URI de redirection, secret de cookie — est longue pour
+  cinq personnes qui se connaissent, et chaque invité doit avoir un compte Google. Reste la
+  destination désignée si les liens ne suffisent plus (voir ci-dessus).
+- **L'allowlist de Community Cloud seule.** Elle ferme la porte mais ne dit pas qui est entré —
+  depuis Streamlit 1.42 l'hébergeur ne transmet plus l'adresse connectée : impossible
+  d'attribuer un pari.
 
 ## Conséquences
 
 - Trois modes coexistent, et le code les distingue par la configuration seulement : **local**
-  (rien de configuré, comportement inchangé, celui des tests), **hébergé** (`[auth]` +
-  `ODDS_INVITES` + Supabase), **collecteur** (Supabase seul). `tests/conftest.py` neutralise la
+  (rien de configuré, comportement inchangé, celui des tests), **hébergé** (`[invites]` +
+  Supabase), **collecteur** (Supabase seul). `tests/conftest.py` neutralise la
   configuration d'hébergement comme il neutralise déjà la clé API.
 - La mise en service demande des gestes manuels de l'utilisateur, listés dans le README : un
-  dépôt GitHub (le projet n'a pas encore de dépôt distant), un projet Supabase avec un seau
-  privé `etat`, un client OAuth Google, les secrets Community Cloud et GitHub, puis
-  `odds etat pousser` une fois pour amorcer le seau depuis le disque local.
+  dépôt GitHub (créé le 2026-09-19 : AndyD9/ODds, privé), un projet Supabase avec un seau
+  privé `etat`, les secrets Community Cloud et GitHub, `odds etat pousser` une fois pour
+  amorcer le seau depuis le disque local, puis un `odds inviter` par personne.
 - Les scripts qui écrivent dans `data/` **hors** de `paper` et `collect` — s'il en apparaît —
   doivent appeler `stockage.publier`, sinon leur écriture ne survit pas au prochain réveil.
 - L'application s'endort après douze heures sans visite ; le premier réveil prend une trentaine

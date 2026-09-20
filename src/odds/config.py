@@ -38,16 +38,19 @@ REGLAGES = {
     "SUPABASE_URL": ("URL du projet Supabase (copie distante de l'état)", False, None),
     "SUPABASE_SERVICE_KEY": ("Clé de service Supabase", True, None),
     "SUPABASE_BUCKET": ("Seau Storage qui reçoit les fichiers d'état", False, "etat"),
-    "ODDS_INVITES": ("Adresses autorisées à ouvrir l'application hébergée, "
-                     "séparées par des virgules", False, None),
-    "ODDS_PROPRIETAIRE": ("Adresse du propriétaire : son carnet est le carnet "
-                          "local historique", False, None),
+    "ODDS_INVITES": ("Invités de l'application hébergée : paires nom:clé séparées "
+                     "par des virgules (hébergé : section [invites] des secrets)",
+                     True, None),
+    "ODDS_PROPRIETAIRE": ("Nom d'utilisateur du propriétaire : son carnet est le "
+                          "carnet local historique", False, None),
+    "ODDS_URL": ("Adresse publique de l'application, pour composer les liens "
+                 "d'invitation", False, None),
 }
 
 
 # Secrets masqués à l'affichage mais dont l'absence n'est pas un manque : sans
 # eux, l'outil tourne en mode local (decisions/0009).
-SECRETS_FACULTATIFS = {"SUPABASE_SERVICE_KEY"}
+SECRETS_FACULTATIFS = {"SUPABASE_SERVICE_KEY", "ODDS_INVITES"}
 
 
 def _parser(texte: str) -> dict[str, str]:
@@ -76,22 +79,48 @@ def recharger() -> None:
     _depuis_fichier.cache_clear()
 
 
-def _depuis_secrets(cle: str) -> str | None:
-    """Les secrets Streamlit, seulement si Streamlit est déjà chargé.
+def _secrets_streamlit():
+    """Le coffre ``st.secrets``, seulement si Streamlit est déjà chargé.
 
     Sur Community Cloud la configuration vit dans ``st.secrets``, pas dans
     un .env. On ne l'importe jamais pour autant depuis la CLI : le module
     n'est consulté que s'il est déjà en mémoire, donc depuis l'application.
     Sans fichier de secrets, ``st.secrets`` lève ; c'est « rien ».
+
+    Point de passage unique — les tests le neutralisent ici, et ici
+    seulement : ce module vit hors du dossier de l'application, que le
+    harnais de Streamlit réimporte à chaque exécution.
     """
     st = sys.modules.get("streamlit")
     if st is None:
         return None
     try:
-        val = st.secrets.get(cle)
+        return st.secrets
+    except Exception:
+        return None
+
+
+def _depuis_secrets(cle: str) -> str | None:
+    coffre = _secrets_streamlit()
+    if coffre is None:
+        return None
+    try:
+        val = coffre.get(cle)
     except Exception:
         return None
     return str(val) if val not in (None, "") else None
+
+
+def section_secrets(nom: str) -> dict:
+    """Une section ``[nom]`` des secrets Streamlit, en dictionnaire. Vide sinon."""
+    coffre = _secrets_streamlit()
+    if coffre is None:
+        return {}
+    try:
+        section = coffre.get(nom)
+    except Exception:
+        return {}
+    return dict(section) if section else {}
 
 
 def get(cle: str, defaut: str | None = None) -> str | None:

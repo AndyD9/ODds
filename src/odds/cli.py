@@ -282,6 +282,26 @@ def cmd_etat(args) -> int:
     return 0
 
 
+def cmd_inviter(args) -> int:
+    """Une clé neuve pour un invité, et la ligne à coller dans les secrets."""
+    from odds import config
+    from odds.app import acces
+    nom = args.nom.strip().lower()
+    if not nom or ":" in nom or "," in nom or " " in nom:
+        print("Le nom d'invité est un mot simple, sans espace ni « : » ni « , ».")
+        return 1
+    cle = acces.nouvelle_cle()
+    base = (config.get("ODDS_URL") or "https://<votre-application>.streamlit.app").rstrip("/")
+    print(f"Lien personnel de {nom} — à lui envoyer, et à personne d'autre :\n")
+    print(f"    {base}/?{acces.PARAMETRE}={cle}\n")
+    print("À ajouter aux secrets de l'application (Community Cloud → Settings → Secrets), "
+          "dans la section [invites] :\n")
+    print(f'    {nom} = "{cle}"\n')
+    print("En local, l'équivalent dans .env :  ODDS_INVITES=" + f"{nom}:{cle}")
+    print("Révoquer l'accès : retirer la ligne. L'application redémarre seule.")
+    return 0
+
+
 def cmd_config(args) -> int:
     from odds import config
 
@@ -437,6 +457,10 @@ def main(argv: list[str] | None = None) -> int:
 
     cr = sub.add_parser("credits", help="crédits The Odds API restants et projection")
     cr.set_defaults(func=cmd_credits)
+
+    inv = sub.add_parser("inviter", help="générer le lien personnel d'un invité")
+    inv.add_argument("nom", help="nom d'utilisateur de l'invité (un mot, ex. paul)")
+    inv.set_defaults(func=cmd_inviter)
 
     et = sub.add_parser("etat", help="copie distante de l'état (carnet, collecte, parquets)")
     et.add_argument("sens", choices=["pousser", "tirer"],
