@@ -123,6 +123,29 @@ def section_secrets(nom: str) -> dict:
     return dict(section) if section else {}
 
 
+def diagnostic_secrets() -> str:
+    """Ce que l'application arrive à lire des secrets Streamlit — noms seulement.
+
+    Jamais une valeur : cette phrase s'affiche à l'écran. Trois issues :
+    Streamlit absent, lecture impossible (et pourquoi — une valeur sans
+    guillemets suffit à invalider tout le fichier), ou la liste des clés
+    de premier niveau et des sections trouvées.
+    """
+    st = sys.modules.get("streamlit")
+    if st is None:
+        return "Streamlit n'est pas chargé : pas de secrets."
+    try:
+        contenu = st.secrets.to_dict()
+    except Exception as e:                    # noqa: BLE001 — c'est le message qu'on veut
+        return f"lecture des secrets impossible — {type(e).__name__} : {str(e)[:300]}"
+    if not contenu:
+        return "secrets lus, mais vides."
+    cles = sorted(k for k, v in contenu.items() if not isinstance(v, dict))
+    sections = sorted(k for k, v in contenu.items() if isinstance(v, dict))
+    return ("secrets lus — clés : " + (", ".join(cles) or "aucune")
+            + " ; sections : " + (", ".join(f"[{s}]" for s in sections) or "aucune"))
+
+
 def get(cle: str, defaut: str | None = None) -> str | None:
     """Environnement du processus, puis .env, puis secrets Streamlit, puis défaut."""
     val = os.environ.get(cle) or _depuis_fichier().get(cle) or _depuis_secrets(cle)

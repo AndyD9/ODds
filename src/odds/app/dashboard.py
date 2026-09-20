@@ -97,10 +97,12 @@ except FileNotFoundError as e:
         st.error(f"{e}\n\nLa copie distante est configurée mais ne contient pas ce fichier. "
                  "Depuis le poste : `uv run odds etat pousser`.")
     else:
+        from odds import config
         st.error("Aucune configuration Supabase n'est lue : `SUPABASE_URL` et "
                  "`SUPABASE_SERVICE_KEY` manquent dans les secrets de l'application "
                  "(Community Cloud → Manage app → Settings → Secrets). Sans eux, l'application "
-                 f"hébergée n'a pas de données.\n\nDétail : {e}")
+                 f"hébergée n'a pas de données.\n\nDiagnostic : {config.diagnostic_secrets()}"
+                 f"\n\nDétail : {e}")
     st.stop()
 
 clo = avec_cloture(df)
