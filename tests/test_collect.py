@@ -126,7 +126,11 @@ def test_observed_at_est_notre_horodatage(tmp_path, monkeypatch):
     qui permette un backtest honnête (PLAN §4.3)."""
     bdd = tmp_path / "t.db"
     import odds.data.collect as mod
-    monkeypatch.setattr(mod, "_lire_flux", lambda url: _flux_main())
+    # Un match de demain : avec la date figée de `_flux_main`, le test
+    # cessait de passer dès que le 20/09/2026 était dépassé.
+    f = _flux_main()
+    f["Date"] = (pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)).strftime("%d/%m/%Y")
+    monkeypatch.setattr(mod, "_lire_flux", lambda url: f)
     monkeypatch.setattr(mod, "FLUX", {"main": "x"})
     mod.collecter(bdd, verbose=False)
 

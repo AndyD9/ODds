@@ -243,6 +243,11 @@ if page == "Matchs par date":
     # La fraîcheur va dans la ligne de statut ; seul un flux en retard mérite
     # un bandeau. La publication par à-coups est expliquée là où elle se
     # voit : sur une journée vide.
+    # Streamlit Cloud relance ce script au push sans réimporter `odds` : un
+    # `etat_flux` d'avant la trêve peut encore tourner. Sans ses colonnes, on
+    # retombe sur le jugement par l'âge seul au lieu de planter.
+    if len(fx) and "treve" not in fx:
+        fx = fx.assign(treve=False, prochain_annonce=pd.NaT)
     flux_txt = ""
     if len(fx):
         pub = fx.last_modified_dt.max()
