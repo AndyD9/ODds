@@ -338,7 +338,12 @@ def planifier(plan: pd.DataFrame, dispo: int, cout_unitaire: int,
         fenetre, cadence = ((None, 0.0) if pd.isna(heures)
                             else _classer(heures))
 
-        if pd.notna(heures) and heures < 0:
+        erreur = getattr(r, "erreur", None)
+        if pd.notna(erreur):
+            # Sans ce motif, un /events en échec passe pour « aucun match ».
+            motif = f"erreur /events : {erreur}"
+            fenetre = None
+        elif pd.notna(heures) and heures < 0:
             motif = "coup d'envoi déjà passé"
             fenetre = None
         elif n_proches <= 0 or fenetre is None:

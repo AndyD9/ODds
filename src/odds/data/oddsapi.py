@@ -48,7 +48,17 @@ def _cle() -> str:
 
 
 def _get(chemin: str, **params) -> tuple[list, dict]:
-    r = requests.get(f"{BASE}{chemin}", params={"apiKey": _cle(), **params}, timeout=60)
+    cle = _cle()
+    try:
+        return _get_brut(chemin, cle, **params)
+    except requests.RequestException as e:
+        # Le message de requests porte l'URL, donc la clé : il finit dans le
+        # journal de collecte et dans `collecte_run.erreur`.
+        raise RuntimeError(str(e).replace(cle, "***")) from None
+
+
+def _get_brut(chemin: str, cle: str, **params) -> tuple[list, dict]:
+    r = requests.get(f"{BASE}{chemin}", params={"apiKey": cle, **params}, timeout=60)
     entetes = {
         "utilises": r.headers.get("x-requests-used"),
         "restants": r.headers.get("x-requests-remaining"),

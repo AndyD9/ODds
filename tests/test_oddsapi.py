@@ -161,3 +161,20 @@ def test_migration_idempotente(tmp_path):
     assert c2.execute("SELECT COUNT(*) FROM odds_snapshot").fetchone()[0] == 1
     c2.close()
     mod._connexion(bdd).close()   # deuxième passage : ne doit pas lever
+
+
+def test_la_cle_ne_fuit_pas_dans_les_erreurs(monkeypatch):
+    """Une erreur HTTP porte l'URL : la clé doit en être masquée."""
+    import requests
+
+    monkeypatch.setattr(oddsapi, "_cle", lambda: "cle-secrete-123")
+
+    def refus(*a, **kw):
+        raise requests.HTTPError("500 Server Error for url: "
+                                 "https://api.the-odds-api.com/v4/sports?apiKey=cle-secrete-123")
+
+    monkeypatch.setattr(oddsapi, "_get_brut", refus)
+    with pytest.raises(RuntimeError) as e:
+        oddsapi.evenements("soccer_epl")
+    assert "cle-secrete-123" not in str(e.value)
+    assert "***" in str(e.value)

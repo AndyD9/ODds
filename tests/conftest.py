@@ -53,7 +53,9 @@ def aucun_appel_api_payant(tmp_path_factory):
             "Un test a tenté un appel réseau vers The Odds API. "
             "Les tests ne doivent jamais consommer de crédits payants.")
 
-    mp.setattr(oddsapi, "_get", interdit)
+    # `_get_brut` est le seul appel à requests ; `_get` reste testable (il
+    # masque la clé dans les erreurs).
+    mp.setattr(oddsapi, "_get_brut", interdit)
 
     # 3) même verrou sur la copie distante de l'état.
     def interdit_stockage(*a, **k):
