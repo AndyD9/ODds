@@ -241,6 +241,77 @@ def test_flux_perime_detecte(tmp_path, monkeypatch):
     assert bool(mod.etat_flux(bdd).iloc[0].perime) is True
 
 
+def _annoncer(bdd, prochain, vu_a=None):
+    """Simule ce que la passe The Odds API note du calendrier."""
+    maintenant = pd.Timestamp.now(tz="UTC")
+    con = _connexion(bdd)
+    con.execute("INSERT OR REPLACE INTO calendrier_etat VALUES (?,?,?)",
+                ("soccer_epl", (maintenant + prochain).isoformat(),
+                 (vu_a or maintenant).isoformat()))
+    con.commit()
+    con.close()
+
+
+def _flux_ancien(tmp_path, monkeypatch):
+    bdd = tmp_path / "t.db"
+    import odds.data.collect as mod
+
+    def flux(url):
+        mod._DERNIER_LAST_MODIFIED[url] = "Mon, 01 Jan 2024 00:00:00 GMT"
+        return _flux_main()
+
+    monkeypatch.setattr(mod, "_lire_flux", flux)
+    monkeypatch.setattr(mod, "FLUX", {"main": "x"})
+    mod.collecter(bdd, verbose=False)
+    return bdd, mod
+
+
+def test_treve_le_silence_du_flux_n_est_pas_un_retard(tmp_path, monkeypatch):
+    """Aucun match annoncé avant 16 jours : football-data n'a rien à publier."""
+    bdd, mod = _flux_ancien(tmp_path, monkeypatch)
+    _annoncer(bdd, pd.Timedelta(days=16))
+    e = mod.etat_flux(bdd).iloc[0]
+    assert bool(e.treve) is True
+    assert bool(e.perime) is False
+
+
+def test_match_proche_non_publie_reste_un_retard(tmp_path, monkeypatch):
+    """Un match dans 24 h que football-data n'a pas publié : là, c'est un retard."""
+    bdd, mod = _flux_ancien(tmp_path, monkeypatch)
+    _annoncer(bdd, pd.Timedelta(hours=24))
+    e = mod.etat_flux(bdd).iloc[0]
+    assert bool(e.treve) is False
+    assert bool(e.perime) is True
+
+
+def test_annonce_trop_ancienne_ne_prouve_pas_la_treve(tmp_path, monkeypatch):
+    """Si la passe The Odds API s'est arrêtée, son dernier calendrier ne compte plus."""
+    bdd, mod = _flux_ancien(tmp_path, monkeypatch)
+    _annoncer(bdd, pd.Timedelta(days=16),
+              vu_a=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=3))
+    assert bool(mod.etat_flux(bdd).iloc[0].perime) is True
+
+
+def test_le_plan_gratuit_note_le_prochain_match(tmp_path):
+    """Les championnats en erreur ou sans événement ne sont pas notés."""
+    from odds.data.collect import _noter_calendrier, prochain_match_annonce
+    maintenant = pd.Timestamp.now(tz="UTC")
+    plan = pd.DataFrame({
+        "sport": ["soccer_epl", "soccer_italy_serie_a", "soccer_spain_la_liga"],
+        "prochain": [maintenant + pd.Timedelta(days=10), pd.NaT,
+                     maintenant + pd.Timedelta(days=2)],
+        "erreur": [None, None, "HTTP 500"],
+    })
+    con = _connexion(tmp_path / "t.db")
+    _noter_calendrier(con, plan, maintenant.isoformat())
+    con.commit()
+    notes = [r[0] for r in con.execute("SELECT sport FROM calendrier_etat")]
+    con.close()
+    assert notes == ["soccer_epl"]
+    p = prochain_match_annonce(tmp_path / "t.db")
+    assert abs((p - (maintenant + pd.Timedelta(days=10))).total_seconds()) < 1
+
+
 def test_les_anciens_totaux_OU25_sont_convertis_a_l_ouverture(tmp_path):
     """Les bases constituées avant le vocabulaire unique portent `OU25/over`.
     La conversion se fait à la connexion, sans rien perdre."""

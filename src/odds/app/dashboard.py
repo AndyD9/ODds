@@ -249,17 +249,31 @@ if page == "Matchs par date":
         couv_max = fx.date_max.max()
         age = float(fx.age_heures.max())
         flux_txt = f"flux publié il y a {age:.0f} h, couvre jusqu'au {couv_max}"
+        if fx.treve.any():
+            flux_txt += (" · trêve : aucun match annoncé avant le "
+                         f"{date_longue(fx.prochain_annonce.iloc[0].date()).lower()}")
         if fx.perime.any():
+            # Hébergée, la collecte tourne sur GitHub Actions : le journal
+            # local n'y reçoit plus rien.
+            ou = ("les passes « Collecte des cotes » dans l'onglet Actions du dépôt"
+                  if stockage.actif() else "`logs/collect.err`")
             st.error(f"**Le flux amont semble en retard** : publié le "
                      f"{pub:%a %d %b %H:%M UTC}, il y a {age:.0f} h. "
-                     "Vérifiez `logs/collect.err`.")
+                     f"Vérifiez {ou}.")
 
     with st.spinner("Calcul…"):
         r = matchs_a_la_date(jour, methode)
 
     if r.vide:
         st.info(f"**Aucun match au {jour}.**")
-        if jour >= aujourdhui and len(fx):
+        if (jour >= aujourdhui and len(fx) and fx.treve.any()
+                and jour < fx.prochain_annonce.iloc[0].date()):
+            st.markdown(
+                "**Trêve** : aucun des championnats suivis par The Odds API n'annonce "
+                "de match avant le "
+                f"{date_longue(fx.prochain_annonce.iloc[0].date()).lower()}. "
+                "football-data n'a donc rien de nouveau à publier : ce n'est pas une panne.")
+        elif jour >= aujourdhui and len(fx):
             st.markdown(
                 f"Cette date est **au-delà de ce que la source a publié** "
                 f"(couverture jusqu'au {fx.date_max.max()}).\n\n"

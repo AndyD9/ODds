@@ -99,6 +99,15 @@ CREATE TABLE IF NOT EXISTS flux_etat (
     date_min       TEXT,
     date_max       TEXT
 );
+
+-- Prochain coup d'envoi annoncé par The Odds API (/events, gratuit), par
+-- championnat. Seul moyen de distinguer une trêve — football-data se tait
+-- parce qu'il n'y a rien à publier — d'une source réellement en retard.
+CREATE TABLE IF NOT EXISTS calendrier_etat (
+    sport          TEXT PRIMARY KEY,
+    prochain       TEXT,
+    vu_a           TEXT
+);
 """
 
 
@@ -393,6 +402,20 @@ def _dernieres_passes(con: sqlite3.Connection) -> dict[str, str]:
     return {r[0]: r[1] for r in con.execute(q)}
 
 
+def _noter_calendrier(con, plan: pd.DataFrame, observed_at: str) -> None:
+    """Garde le prochain coup d'envoi de chaque championnat interrogé.
+
+    Un championnat en erreur ou sans aucun événement n'est pas noté : son
+    silence ne prouve rien, et la ligne précédente reste la meilleure trace.
+    """
+    for r in plan.itertuples():
+        # `erreur` vaut None dans le plan, mais NaN une fois en DataFrame.
+        if pd.notna(getattr(r, "erreur", None)) or pd.isna(r.prochain):
+            continue
+        con.execute("INSERT OR REPLACE INTO calendrier_etat VALUES (?,?,?)",
+                    (r.sport, pd.Timestamp(r.prochain).isoformat(), observed_at))
+
+
 def _collecter_oddsapi(con, observed_at, run_id, connu, verbose):
     """Passe The Odds API, sous contrainte de budget.
 
@@ -416,6 +439,7 @@ def _collecter_oddsapi(con, observed_at, run_id, connu, verbose):
         return 0, 0, 0, None, []
 
     plan = oddsapi.championnats_avec_matchs(sports, heures=36)   # gratuit
+    _noter_calendrier(con, plan, observed_at)
     ordre = planifier(plan, dispo, cout_unitaire, _dernieres_passes(con))
     retenus = ordre[ordre.retenu].sport.tolist()
     if verbose:
@@ -603,9 +627,46 @@ def etat_flux(chemin_bdd: Path | None = None) -> pd.DataFrame:
                                            utc=True, errors="coerce")
     maintenant = pd.Timestamp.now(tz="UTC")
     d["age_heures"] = (maintenant - d.last_modified_dt).dt.total_seconds() / 3600
+    # Pendant une trêve, football-data n'a rien à publier : son silence n'est
+    # pas un retard tant qu'aucun match n'est annoncé dans l'horizon où il
+    # l'aurait déjà publié.
+    prochain = prochain_match_annonce(chemin_bdd, maintenant)
+    d["prochain_annonce"] = prochain
+    d["treve"] = (prochain is not None
+                  and (prochain - maintenant).total_seconds() / 3600 > HORIZON_PUBLICATION_H)
     # Deux publications par semaine : au-delà de ~4 jours, le flux est en retard.
-    d["perime"] = d.age_heures > 96
+    d["perime"] = (d.age_heures > 96) & ~d.treve
     return d
+
+
+# football-data publie en milieu de semaine pour le week-end, et le vendredi :
+# un match à moins de 3 jours devrait déjà figurer dans ses fixtures.
+HORIZON_PUBLICATION_H = 72
+# Au-delà, l'annonce n'est plus une preuve : le calendrier a pu bouger, ou la
+# collecte The Odds API s'est arrêtée.
+VALIDITE_CALENDRIER_H = 48
+
+
+def prochain_match_annonce(chemin_bdd: Path | None = None,
+                           maintenant: pd.Timestamp | None = None) -> pd.Timestamp | None:
+    """Le prochain coup d'envoi annoncé, tous championnats confondus.
+
+    None si l'annonce manque ou date de plus de ``VALIDITE_CALENDRIER_H`` :
+    on ne conclut alors rien, et le flux est jugé sur son seul âge.
+    """
+    maintenant = maintenant or pd.Timestamp.now(tz="UTC")
+    con = _connexion(chemin_bdd)
+    try:
+        c = pd.read_sql("SELECT * FROM calendrier_etat", con)
+    finally:
+        con.close()
+    if len(c) == 0:
+        return None
+    vu = pd.to_datetime(c.vu_a, utc=True, errors="coerce")
+    c = c[(maintenant - vu).dt.total_seconds() / 3600 <= VALIDITE_CALENDRIER_H]
+    prochain = pd.to_datetime(c.prochain, utc=True, errors="coerce")
+    prochain = prochain[prochain > maintenant]
+    return prochain.min() if len(prochain) else None
 
 
 def resume(chemin_bdd: Path | None = None) -> dict:
